@@ -10,7 +10,7 @@ PAL release (`SLES_542.18`) and statically recompiling it to C++.
 ---
 
 ## AI Usage
-**Alot of the Decomp was coded with AI and fixed by me if there were mistakes or bad code mostly done out of boredom since I'm working on a different project that has be banging my head against a wall** 
+**Alot of the Decomp was coded with AI and fixed by me if there were mistakes or bad code. This was mostly done out of boredom since I'm working on a different project that has be banging my head against a wall** 
 
 ## Status
 
