@@ -1,9 +1,3 @@
-# Replays a GS dump (src/ror_gsdump.cpp, ROR_GSDUMP) in PCSX2 and saves PCSX2's own screenshot of it.
-#   powershell -ExecutionPolicy Bypass -File tools\port\gs_replay.ps1 DUMP.gs OUT.png [-Seconds 8]
-# PCSX2 is the pinned release (v2.8.2) unpacked into tools\bin\pcsx2 in portable mode (portable.txt, inis\PCSX2.ini with
-# the Screenshot hotkey on F8; SETUP.md). GS dumps need no BIOS. The dump loops; after -Seconds the script focuses
-# PCSX2's window, presses F8, waits for the PNG in tools\bin\pcsx2\snaps and closes PCSX2.
-# -Software: PCSX2's software renderer (GSRendererType::SW 13) instead of Auto (-1, hardware).
 param([Parameter(Mandatory)][string]$Dump, [Parameter(Mandatory)][string]$Out, [int]$Seconds = 8, [switch]$Software)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
@@ -24,7 +18,6 @@ $p = Start-Process $exe -ArgumentList @('-batch', '-nogui', '--', "`"$dumpPath`"
 try {
     Start-Sleep -Seconds $Seconds
     if ($p.HasExited) { throw "PCSX2 exited early (code $($p.ExitCode)); see $pcsx2\logs" }
-    # Windows may refuse the focus change (foreground lock), then F8 goes elsewhere: try a few times.
     $shell = New-Object -ComObject WScript.Shell
     $shot = $null
     for ($try = 0; $try -lt 3 -and -not $shot; $try++) {
@@ -38,7 +31,7 @@ try {
         }
     }
     if (-not $shot) { throw "no screenshot appeared in $snaps" }
-    for ($i = 0; ; $i++) { # PCSX2 may still be writing the PNG
+    for ($i = 0; ; $i++) {
         Start-Sleep -Milliseconds 500
         try { Copy-Item $shot.FullName $Out -Force -ErrorAction Stop; break } catch { if ($i -ge 10) { throw } }
     }

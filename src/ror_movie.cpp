@@ -1,25 +1,3 @@
-// Movie seam (notes/port.md "Movies"): our own player in place of rxmpeg's stream reading and libmpeg's IPU decode.
-// The game keeps its player setup 0x182cb4 (picture buffers, libmpeg create), reset 0x182bfc, teardown 0x182ee8, its
-// player interface 0x181820-0x181e50 (TskMovie, the title's attract mode), the worker-stop 0x182ae4 and the display
-// 0x181978; we replace the five functions that touch the stream:
-//
-//   0x18313c open, waits for start (TskMovie: 0x181c3c)   0x18301c open, plays at once (title state 0x1af6ac)
-//   0x18324c start                                         0x1832d8 per-frame update   0x182b98 stream close
-//
-// Our update reproduces the game's update and its decode worker 0x182824 (not started: it spins without a syscall):
-// one picture decoded ahead into slot 0x710278 while 0x710280 > 1, a picture consumed every other frame (0x71026c),
-// so 25 pictures/s at the movie interval 1 (50 Hz). Pictures: RGBA, alpha 0x80, in the layout the display uploads,
-// 16-pixel-wide columns of the movie's height (0x710204), column c at c * height * 64 bytes, slot stride
-// 0x29af98 * 0x29af9c * 4 (0x183634). The game's state as its readers see it:
-//   0x29af7c ready (0x1832cc), 0x29af58 finished (0x1837c0), 0x29af94 last 0x2800 bytes (0x183130, the fade cue),
-//   0x29af48 bytes left, 0x710204 picture height (0x183628: 0 = nothing to draw), 0x710208 decoded pictures
-//   (0x1832b8, script native 253; UNVERIFIED whether libmpeg counts from 0 or 1), 0x29af54 pause, 0x29af50 volume.
-//
-// Video: FFmpeg's MPEG-2 decoder (avcodec/avutil, build.py ffmpeg: gyan.dev's 8.1.2 build, GPL v3), loaded at runtime
-// from ROR_FFMPEG_DIR or next to the runner; without it every movie is skipped as before. Colour: ITU-R BT.601, MPEG-2's default matrix, studio range
-// (UNVERIFIED against the IPU's output: no real-game dump of a movie yet). Audio: private stream 1, sub-stream 0xff,
-// a Sony SShd/SSbd PS-ADPCM stream (notes/formats/pss.md, tools/pss_audio.py), decoded here and played through the
-// runtime's raylib audio device. ROR_MOVIES=0 skips all movies (the old placeholder behaviour).
 #include "ror.h"
 #include "ror_adpcm.h"
 
@@ -42,7 +20,6 @@ extern "C" __declspec(dllimport) void *__stdcall GetProcAddress(void *module, co
 
 namespace
 {
-    // ---- the game's player state (rxmpeg globals, libmpeg's decoder struct at 0x710200) ----
     constexpr uint32_t kHandle = 0x29af44, kLeft = 0x29af48, kSize = 0x29af4c, kVolume = 0x29af50, kPause = 0x29af54,
                        kFinished = 0x29af58, kConsumed = 0x29af5c, kStarted = 0x29af78, kReady = 0x29af7c,
                        kPictures = 0x29af80, kAudioOn = 0x29af88, kNearEnd = 0x29af94, kBufW = 0x29af98,
@@ -52,8 +29,6 @@ namespace
                        kFree = 0x710280;
     constexpr uint32_t kWorkerStop = 0x182ae4, kAudioClose = 0x182068;
 
-    // ---- FFmpeg, the few entry points used, loaded at runtime. Struct prefixes as in FFmpeg's public headers
-    // (libavutil/frame.h AVFrame, libavcodec/packet.h AVPacket; stable since FFmpeg 4). ----
     struct AVFramePrefix
     {
         uint8_t *data[8];
@@ -70,11 +45,11 @@ namespace
         uint8_t *data;
         int size;
     };
-    constexpr int kCodecMpeg2 = 2;                 // AV_CODEC_ID_MPEG2VIDEO
-    constexpr int kPixYuv420p = 0;                 // AV_PIX_FMT_YUV420P
-    constexpr int kEagain = -11;                   // AVERROR(EAGAIN) with the MSVC CRT's EAGAIN 11
+    constexpr int kCodecMpeg2 = 2;
+    constexpr int kPixYuv420p = 0;
+    constexpr int kEagain = -11;
     constexpr int64_t kNoPts = static_cast<int64_t>(0x8000000000000000ull);
-    constexpr int kAudioChunk = 4096;              // audio frames per raylib stream update
+    constexpr int kAudioChunk = 4096;
 
     struct Ff
     {
@@ -99,8 +74,6 @@ namespace
         if (g_ff.tried)
             return g_ff.ok;
         g_ff.tried = true;
-        // avutil-N.dll and avcodec-N.dll (any N: FFmpeg's struct prefixes above are stable) in ROR_FFMPEG_DIR or next
-        // to the runner (build.py ffmpeg, then build).
         namespace fs = std::filesystem;
         fs::path dir;
         if (const char *e = std::getenv("ROR_FFMPEG_DIR"); e && *e)
@@ -164,30 +137,27 @@ namespace
     {
         FILE *f = nullptr;
         std::string name;
-        uint64_t size = 0, pos = 0;          // file bytes demuxed so far
+        uint64_t size = 0, pos = 0;
         bool eof = false, flushed = false, drained = false;
-        std::vector<uint8_t> in;             // file bytes not yet demuxed
-        std::deque<uint8_t> video;           // MPEG-2 elementary stream
+        std::vector<uint8_t> in;
+        std::deque<uint8_t> video;
         void *ctx = nullptr, *parser = nullptr, *pkt = nullptr, *frm = nullptr;
         uint32_t pictures = 0;
-        // audio
-        std::vector<uint8_t> audioRaw;       // the SShd/SSbd stream as demuxed
-        size_t audioBody = 0;                // offset of the ADPCM body in audioRaw (0 = header not parsed yet)
+        std::vector<uint8_t> audioRaw;
+        size_t audioBody = 0;
         int rate = 0, channels = 0, interleave = 0;
-        size_t audioPos = 0;                 // next undecoded byte of the body
+        size_t audioPos = 0;
         ror::Adpcm dec[2];
-        std::vector<int16_t> pcm;            // decoded, interleaved, not yet queued
+        std::vector<int16_t> pcm;
         AudioStream stream{};
         bool streamOn = false, playing = false;
         float volume = -1.0f;
-        uint32_t queued = 0, starved = 0;    // sub-buffers handed to raylib; refills missed for want of samples
-        FILE *wav = nullptr;                 // ROR_MOVIE_WAV: the decoded audio, as tools/pss_audio.py --wav writes it
+        uint32_t queued = 0, starved = 0;
+        FILE *wav = nullptr;
         uint32_t wavFrames = 0;
     };
     Movie *g_movie = nullptr;
 
-    // MPEG-2 program stream: pack headers (0xba), system header and PES packets (0xbb..0xff, 16-bit length).
-    // Video: stream 0xe0. Audio: private stream 1 (0xbd) whose payload starts with ff a1 00 00.
     bool demux(Movie &m)
     {
         if (m.eof)
@@ -214,7 +184,7 @@ namespace
                 i += 14 + (d[i + 13] & 7);
                 continue;
             }
-            if (sid == 0xb9)    // program end
+            if (sid == 0xb9)
             {
                 i += 4;
                 continue;
@@ -252,7 +222,6 @@ namespace
         return true;
     }
 
-    // BT.601 studio range -> RGB, 16.16 fixed point (ITU-R BT.601 / ISO 13818-2 default matrix_coefficients).
     inline uint8_t clamp8(int v) { return static_cast<uint8_t>(v < 0 ? 0 : v > 255 ? 255 : v); }
 
     void writePicture(uint8_t *rdram, const AVFramePrefix &fr, uint32_t slot)
@@ -283,7 +252,6 @@ namespace
         ror::wr32(rdram, kMpegH, static_cast<uint32_t>(h));
     }
 
-    // Next picture into `slot`; false at the end of the stream.
     bool decodePicture(uint8_t *rdram, Movie &m, uint32_t slot)
     {
         auto *pkt = static_cast<AVPacketPrefix *>(m.pkt);
@@ -304,7 +272,6 @@ namespace
             }
             if (r != kEagain || m.drained)
                 return false;
-            // Feed the parser: whole pictures out of the elementary stream.
             uint8_t *out = nullptr;
             int outSize = 0;
             if (m.video.size() < 0x10000 && !m.eof)
@@ -326,7 +293,7 @@ namespace
                     }
                     continue;
                 }
-                g_ff.send_packet(m.ctx, nullptr);   // drain the decoder's last pictures
+                g_ff.send_packet(m.ctx, nullptr);
                 m.drained = true;
                 continue;
             }
@@ -347,7 +314,6 @@ namespace
         }
     }
 
-    // ---- audio: SShd header, then the PS-ADPCM body, channels interleaved every `interleave` bytes ----
     void wavHeader(FILE *f, int rate, int channels, uint32_t frames)
     {
         auto u32 = [&](uint32_t v) { std::fwrite(&v, 4, 1, f); };
@@ -388,7 +354,6 @@ namespace
         m.interleave = static_cast<int>(w[5]);
         m.audioBody = 8 + hsize + 8;
         m.audioPos = m.audioBody;
-        // Sub-buffers of kAudioChunk frames (raylib 5.5's default is the device rate / 30): set only for this stream.
         SetAudioStreamBufferSizeDefault(kAudioChunk);
         m.stream = LoadAudioStream(static_cast<unsigned>(m.rate), 16, static_cast<unsigned>(m.channels));
         SetAudioStreamBufferSizeDefault(0);
@@ -408,7 +373,6 @@ namespace
     {
         if (!m.audioBody || m.audioBody == SIZE_MAX)
             return;
-        // One interleave block per channel at a time: block k belongs to channel k % channels.
         const size_t group = static_cast<size_t>(m.interleave) * m.channels;
         while (m.audioPos + group <= m.audioRaw.size())
         {
@@ -426,11 +390,11 @@ namespace
                 m.wavFrames += static_cast<uint32_t>(frames * 28);
             }
         }
-        if (m.audioPos > 0x100000)   // keep the demuxed buffer small
+        if (m.audioPos > 0x100000)
         {
             m.audioRaw.erase(m.audioRaw.begin(), m.audioRaw.begin() + static_cast<ptrdiff_t>(m.audioPos));
             m.audioPos = 0;
-            m.audioBody = 1;   // parsed; positions are now relative
+            m.audioBody = 1;
         }
     }
 
@@ -452,7 +416,6 @@ namespace
             m.playing = false;
             return;
         }
-        // raylib asks for one sub-buffer (kAudioChunk frames) at a time.
         const size_t want = kAudioChunk * static_cast<size_t>(m.channels);
         while (IsAudioStreamProcessed(m.stream) && m.pcm.size() >= want)
         {
@@ -515,8 +478,6 @@ namespace
         return on;
     }
 
-    // The old placeholder's state: the end of a stream (prebuffered, past the last 0x2800 bytes, finished), handle
-    // -1 so start and update do nothing and no worker runs.
     void skip(uint8_t *rdram, R5900Context *ctx, const std::string &name, const char *why)
     {
         ror::log("movie movie/%s skipped (%s)", name.c_str(), why);
@@ -557,8 +518,6 @@ namespace
             closeMovie();
             return skip(rdram, ctx, name, "FFmpeg's MPEG-2 decoder did not open");
         }
-        // As the game's opens: handle (any value >= 0), bytes left, flags; libmpeg's picture height 0 until the first
-        // picture (the display draws nothing before).
         const uint32_t size = static_cast<uint32_t>(std::min<uint64_t>(m->size, 0x7fffffff));
         ror::wr32(rdram, kNearEnd, 0);
         ror::wr32(rdram, kDecodes, 0);
@@ -589,17 +548,16 @@ void ror_movie_start(uint8_t *rdram, R5900Context *ctx, PS2Runtime *)
 
 void ror_movie_update(uint8_t *rdram, R5900Context *ctx, PS2Runtime *)
 {
-    ror::wr32(rdram, kFlag014, 0);   // FUN_00182818(0)
+    ror::wr32(rdram, kFlag014, 0);
     Movie *m = g_movie;
     if (!m || static_cast<int32_t>(ror::rd32(rdram, kHandle)) < 0)
         return ror::ret(ctx, 0);
-    ror::wr32(rdram, kReady, 1);   // the game's: once 0x30000 bytes are buffered; ours reads on demand
+    ror::wr32(rdram, kReady, 1);
     if (ror::rd32(rdram, kStarted) != 1)
     {
         audioPump(rdram, *m, false);
         return ror::ret(ctx, 0);
     }
-    // The decode worker: one picture ahead into the free slot.
     while (static_cast<int32_t>(ror::rd32(rdram, kFree)) > 1)
     {
         const uint32_t slot = ror::rd32(rdram, kWriteSlot);
@@ -612,18 +570,16 @@ void ror_movie_update(uint8_t *rdram, R5900Context *ctx, PS2Runtime *)
     }
     audioParseHeader(*m);
     audioDecode(*m);
-    // Audio is demuxed as the video needs data; keep it 3 sub-buffers ahead of raylib (the video stays queued).
     while (m->streamOn && !m->eof && m->pcm.size() < 3u * kAudioChunk * m->channels && m->video.size() < 0x400000)
     {
         demux(*m);
         audioDecode(*m);
     }
-    // Bytes left: the game counts the file down as it demuxes; at the stream's end nothing is left.
     const bool done = m->drained || (m->eof && m->video.empty() && m->flushed);
     const uint32_t left = done ? 0 : static_cast<uint32_t>(std::min<uint64_t>(m->size - std::min(m->pos, m->size), 0x7fffffff));
     ror::wr32(rdram, kLeft, left);
     if (ror::rd32(rdram, kAudioOn) == 0 && static_cast<int32_t>(ror::rd32(rdram, kFree)) < 2)
-        ror::wr32(rdram, kAudioOn, 1);   // the game starts its audio with the first picture (0x181ff0)
+        ror::wr32(rdram, kAudioOn, 1);
     if (ror::rd32(rdram, kAudioOn) != 0)
     {
         if (static_cast<int32_t>(left) < 0x2800)
@@ -651,8 +607,6 @@ void ror_movie_update(uint8_t *rdram, R5900Context *ctx, PS2Runtime *)
 
 void ror_movie_close(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
 {
-    // The game's 0x182b98: bytes left 0, stop the decode worker (none runs: 0x182ae4 just checks), close the stream,
-    // close its audio channel (0x182068).
     closeMovie();
     ror::wr32(rdram, kLeft, 0);
     ror::call(rdram, ctx, runtime, kWorkerStop, {});

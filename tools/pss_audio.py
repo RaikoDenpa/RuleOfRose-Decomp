@@ -1,40 +1,28 @@
-"""PSS movie audio (MOVIE/*.PSS) -> SShd/SSbd stream or WAV.
-
-A PSS is an MPEG-2 program stream. The audio sits in private stream 1 (0x1bd) packets whose payload starts with
-sub-stream id 0xff and `a1 00 00`. The rest of each payload is the next piece of one Sony SShd/SSbd stream:
-PS-ADPCM, usually stereo 48 kHz, channels interleaved every 0x20 bytes. ffmpeg's MPEG-PS demuxer ignores sub-id
-0xff, so the port's movie player needs this demux. Evidence: notes/formats/pss.md.
-
-Usage:
-  python pss_audio.py <X.PSS> --dump
-  python pss_audio.py <X.PSS> --ads <out.ads>     (raw SShd stream; ffmpeg reads it with -f ads)
-  python pss_audio.py <X.PSS> --wav <out.wav>
-"""
+"""PSS movie audio (MOVIE/*.PSS) -> SShd/SSbd stream or WAV."""
 import argparse
 import os
 import struct
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import psadpcm  # noqa: E402
+import psadpcm
 
 AUDIO_SUB_ID = 0xff
-PREFIX_LEN = 4  # ff a1 00 00
+PREFIX_LEN = 4
 CODEC_PSADPCM = 0x10
 
 
 def audio_packets(data):
-    """Yield the audio payload (prefix stripped) of each 0x1bd packet, in file order."""
     i = 0
     while True:
         i = data.find(b'\x00\x00\x01', i)
         if i < 0 or i + 9 > len(data):
             return
         sid = data[i + 3]
-        if sid == 0xba:  # MPEG-2 pack header: 14 bytes + stuffing
+        if sid == 0xba:
             i += 14 + (data[i + 13] & 7)
             continue
-        if sid < 0xbb:  # not a PES packet (start code inside video data)
+        if sid < 0xbb:
             i += 4
             continue
         ln = int.from_bytes(data[i + 4:i + 6], 'big')
@@ -46,12 +34,10 @@ def audio_packets(data):
 
 
 def demux(data):
-    """Return the whole SShd/SSbd stream (b'' when the movie has no audio)."""
     return b''.join(audio_packets(data))
 
 
 def parse_header(ss):
-    """SShd header -> dict, plus the offset of the ADPCM body. None if ss is not an SShd stream."""
     if ss[:4] != b'SShd':
         return None
     hsize = struct.unpack_from('<I', ss, 4)[0]
@@ -65,7 +51,6 @@ def parse_header(ss):
 
 
 def split_channels(body, nch, interleave):
-    """Block k of `interleave` bytes belongs to channel k % nch."""
     out = [bytearray() for _ in range(nch)]
     for k, p in enumerate(range(0, len(body) - interleave + 1, interleave)):
         out[k % nch] += body[p:p + interleave]

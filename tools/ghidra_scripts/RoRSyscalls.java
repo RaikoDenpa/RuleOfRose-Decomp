@@ -1,11 +1,3 @@
-// Phase 2 step 3a: name libkernl syscall wrappers.
-//
-// A Sony libkernl wrapper is `li v1,<n>; syscall; jr ra; nop` (v1 = syscall number, negative for i* variants).
-// Every `syscall` in .text is found, v1 is resolved by straight-line constant tracking inside its function, and
-// functions of at most MAX_WRAPPER_INSNS instructions with exactly one syscall are named from data/ee_syscalls.tsv.
-// Larger functions that issue syscalls inline are only reported.
-//
-// Args: [outFile]  optional TSV report (address, function, size, number, table name, action)
 //@category RuleOfRose
 
 import java.io.*;
@@ -55,8 +47,6 @@ public class RoRSyscalls extends GhidraScript {
             else if (nm == null) action = "number-not-in-table";
             else if (count > MAX_WRAPPER_INSNS || syscalls != 1) action = "inline-not-renamed";
             else {
-                // The EE extension's analyzer already names many wrappers (often with Sony's leading-underscore
-                // names, e.g. _Exit/_StartThread); keep those, but replace its RFU### placeholders.
                 boolean keep = f.getSymbol().getSource() != SourceType.DEFAULT && !f.getName().startsWith("RFU");
                 action = keep ? (f.getName().equals(nm) ? "named" : "kept-extension-name") : "named";
                 if (seen.add(f)) {
@@ -77,7 +67,6 @@ public class RoRSyscalls extends GhidraScript {
 
     int countSyscalls(Function f) { int c = 0; for (Instruction i : currentProgram.getListing().getInstructions(f.getBody(), true)) if (mnem(i).equals("syscall")) c++; return c; }
 
-    // value of v1 at `at`, tracking li/lui/addiu/ori/move in address order from the function entry
     Long v1At(Function f, Address at) {
         Map<String, Long> regs = new HashMap<>();
         for (Instruction i : currentProgram.getListing().getInstructions(f.getBody(), true)) {
@@ -109,7 +98,6 @@ public class RoRSyscalls extends GhidraScript {
         return regs.get(r);
     }
 
-    // R5900 operands come back as sub-registers (v1_lo); use the base register name
     String reg(Instruction i, int k) {
         if (k >= i.getNumOperands()) return null;
         for (Object o : i.getOpObjects(k)) {

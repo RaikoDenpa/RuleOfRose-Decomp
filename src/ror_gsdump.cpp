@@ -1,33 +1,3 @@
-// PCSX2 GS dumps from the runtime's GIF side, in the format of the PCSX2 version the renderer plan pins (v2.8.2:
-// pcsx2/GS/GSDump.cpp, GSState::Freeze state version 9, GSLzma.cpp GSDumpFile::ReadFile, GSDumpReplayer.cpp), so a
-// captured frame replays in PCSX2's GS (notes/renderer.md).
-//
-//   ROR_GSDUMP=F[:N][,F[:N]...]   gsdump_F.gs: the GS state at the end of wait_vsync_swap F, then N frames (default 3)
-//                                  of GIF transfers, GS->host reads, privileged registers and vsyncs
-//
-//   transfers   GifArbiter observer (patch 0008): each packet as the GS gets it, per path, without the GIFtags the VIF1
-//               interpreter adds in front of IMAGE data that continues in a later DIRECT. Dump path = the index of
-//               GSState::Transfer<index>: PATH2 1, PATH3 2, PATH1 (XGKICK, whole packets) 3 "Path1New"
-//   A+D         GS::writeRegister observer: register writes runtime handlers make outside the GIF stream
-//               (sceGsPutDrawEnv, from gs_swap_env 0x25b908 every frame) -> a one-register A+D packet on PATH3
-//   reads       ConsumeLocalToHostBytes (sceGsExecStoreImage) -> ReadFIFO2, size in quadwords
-//   vsyncs      every VBlank the host clock runs (ror_vsync.cpp, on the game thread): the privileged registers
-//               (GSPrivRegSet: the 8 KB at 0x12000000, CSR.FIELD alternating), then VSync
-//   state       GSState::Freeze from a shadow of every GS register write since boot (each path's GIF stream parsed,
-//               PACKED data converted to register values as the GS does) and the GS memory; transfer state idle (total
-//               0, what PCSX2 assumes for version 8 dumps), path tags idle. A dump starts only when no path is inside a
-//               GIF packet, otherwise one frame later.
-//
-//   ROR_GSDUMP_VIF1=1 adds the VIF1 side (renderer plan step 0b; ror-gsreplay --vif1 reads these, gsdump_F_vif1.gs):
-//   after the registers a record 0x40 with the VU1 state (micro and data memory, VIF1 registers,
-//   VF/VI/ACC/Q/P/I/R/MAC/clip/status), and a record 0x41 per stream PS2Memory::processVIF1Data receives (patch
-//   0010's observer), each {u8 type, u32 size, data}.
-//
-//   ROR_GS=pcsx2: PS2Recomp's GS and VU1 are idle (null raster backend, VIF1 sink), so the state and the VU1 state come
-//   from PCSX2 (ror_pcsx2_gs_save_state, ror_pcsx2_vu1_get_state) and the VIF1 records are always written: the GIF
-//   streams hold PATH3 only, the dump replays with --vif1, through the code the live port runs.
-//
-// The GIF, register and VIF1 observers are installed by ror_gs.cpp, which also feeds PCSX2 from them.
 #include "ror.h"
 #include "ror_pcsx2host.h"
 
@@ -43,16 +13,15 @@
 
 namespace
 {
-    constexpr uint32_t kStateVersion = 9;   // GSState::STATE_VERSION
-    constexpr uint32_t kCrc = 0x52585249u;  // ElfObject::GetCRC (XOR of all words) of SLES_542.18
+    constexpr uint32_t kStateVersion = 9;
+    constexpr uint32_t kCrc = 0x52585249u;
     constexpr char kSerial[] = "SLES-54218";
-    constexpr uint32_t kStateSize = 4194813u; // GSState::GetSaveStateSize(9)
-    enum : uint8_t { kTransfer = 0, kVSync = 1, kReadFifo2 = 2, kRegisters = 3 };  // GSDumpTypes::GSType
-    enum : uint8_t { kVu1State = 0x40, kVif1Data = 0x41 };                          // ours (ROR_GSDUMP_VIF1)
-    enum : uint8_t { kPath2 = 1, kPath3 = 2, kPath1New = 3 };                        // GSDumpTypes::GSTransferPath
-    constexpr uint64_t kTex2Mask = 0xFFFFFFE003F00000ull;                           // GSState::GIFRegHandlerTEX2
+    constexpr uint32_t kStateSize = 4194813u;
+    enum : uint8_t { kTransfer = 0, kVSync = 1, kReadFifo2 = 2, kRegisters = 3 };
+    enum : uint8_t { kVu1State = 0x40, kVif1Data = 0x41 };
+    enum : uint8_t { kPath2 = 1, kPath3 = 2, kPath1New = 3 };
+    constexpr uint64_t kTex2Mask = 0xFFFFFFE003F00000ull;
 
-    // One GIF path: what is left of the current GIFtag (PACKED: quadwords, REGLIST: 64-bit words, IMAGE: quadwords).
     struct PathState
     {
         uint32_t left = 0;
@@ -60,18 +29,17 @@ namespace
         uint32_t nreg = 0;
         uint64_t regs = 0;
         uint32_t index = 0;
-        bool pad = false; // REGLIST with an odd word count: the last quadword's upper half follows
+        bool pad = false;
     };
 
-    // GS register state as PCSX2 keeps it (m_env, m_v, m_q), indexed by register address.
     struct Shadow
     {
         uint64_t reg[0x64] = {};
         uint64_t prim = 0;
         uint64_t rgbaq = 0, st = 0, xyz = 0;
         uint32_t uv = 0, fog = 0;
-        uint32_t q = 0x3f800000u; // 1.0f
-        PathState path[4];        // by dump path
+        uint32_t q = 0x3f800000u;
+        PathState path[4];
     } g_s;
 
     struct Planned
@@ -89,7 +57,7 @@ namespace
     uint32_t g_framesLeft = 0;
     bool g_field = false;
     bool g_vif1 = false;
-    bool g_pcsx2 = false; // state and VU1 state from PCSX2
+    bool g_pcsx2 = false;
     uint32_t g_count[4] = {}, g_regWrites = 0, g_vsyncs = 0, g_reads = 0, g_vif1Streams = 0;
 
     void writeRecord(uint8_t type, const void *data, uint32_t size)
@@ -103,10 +71,10 @@ namespace
     {
         switch (a)
         {
-        case 0x00: // PRIM: all of it with PRMODECONT.AC = 1, else only the primitive type (GSState::ApplyPRIM)
+        case 0x00:
             g_s.prim = (g_s.reg[0x1a] & 1) ? (v & 0x7ff) : ((g_s.prim & ~7ull) | (v & 7));
             break;
-        case 0x1b: // PRMODE: the attributes, with PRMODECONT.AC = 0
+        case 0x1b:
             if (!(g_s.reg[0x1a] & 1))
                 g_s.prim = (v & 0x7f8) | (g_s.prim & 7);
             break;
@@ -122,7 +90,7 @@ namespace
         case 0x0d: g_s.xyz = v; break;
         case 0x0a: g_s.fog = static_cast<uint32_t>(v >> 56); break;
         case 0x16:
-        case 0x17: // TEX2_1/2: the CLUT fields of TEX0_1/2
+        case 0x17:
             g_s.reg[a - 0x10] = (g_s.reg[a - 0x10] & ~kTex2Mask) | (v & kTex2Mask);
             break;
         default:
@@ -132,7 +100,6 @@ namespace
         }
     }
 
-    // PACKED data -> the register write the GS makes of it.
     void writePacked(uint8_t desc, uint64_t lo, uint64_t hi)
     {
         switch (desc)
@@ -191,13 +158,13 @@ namespace
                     s.nreg = 16;
                 s.regs = hi;
                 s.index = 0;
-                if (s.flg == 0 && ((lo >> 46) & 1)) // PRE: the tag's PRIM field goes to PRIM
+                if (s.flg == 0 && ((lo >> 46) & 1))
                     writeReg(0x00, (lo >> 47) & 0x7ff);
                 s.left = s.flg >= 2 ? nloop : nloop * s.nreg;
                 s.pad = s.flg == 1 && (s.left & 1);
                 continue;
             }
-            if (s.flg == 0) // PACKED
+            if (s.flg == 0)
             {
                 if (pos + 16 > n)
                     break;
@@ -207,7 +174,7 @@ namespace
                 writePacked(static_cast<uint8_t>((s.regs >> (4 * s.index)) & 0xf), lo, hi);
                 pos += 16;
             }
-            else if (s.flg == 1) // REGLIST
+            else if (s.flg == 1)
             {
                 if (pos + 8 > n)
                     break;
@@ -218,7 +185,7 @@ namespace
                     writeReg(desc, v);
                 pos += 8;
             }
-            else // IMAGE (FLG 2 or 3): the data itself is in the GS memory snapshot
+            else
             {
                 const uint32_t k = std::min(s.left, (n - pos) / 16);
                 if (k == 0)
@@ -239,7 +206,6 @@ namespace
         v.insert(v.end(), b, b + sizeof(T));
     }
 
-    // GSState::Freeze, version 9.
     std::vector<uint8_t> freeze(const std::vector<uint8_t> &vram)
     {
         std::vector<uint8_t> s;
@@ -247,34 +213,34 @@ namespace
         put(s, kStateVersion);
         put(s, g_s.prim);
         for (uint8_t a : {0x1a, 0x1c, 0x22, 0x3b, 0x3d, 0x44, 0x45, 0x46, 0x49, 0x50, 0x53, 0x51, 0x52, 0x52})
-            put(s, g_s.reg[a]); // PRMODECONT TEXCLUT SCANMSK TEXA FOGCOL DIMX DTHE COLCLAMP PABE BITBLTBUF TRXDIR TRXPOS TRXREG TRXREG
+            put(s, g_s.reg[a]);
         for (uint8_t i = 0; i < 2; ++i)
             for (uint8_t a : {0x18, 0x06, 0x14, 0x08, 0x34, 0x36, 0x40, 0x42, 0x47, 0x4a, 0x4c, 0x4e})
-                put(s, g_s.reg[a + i]); // XYOFFSET TEX0 TEX1 CLAMP MIPTBP1 MIPTBP2 SCISSOR ALPHA TEST FBA FRAME ZBUF
+                put(s, g_s.reg[a + i]);
         put(s, g_s.rgbaq);
         put(s, g_s.st);
         put(s, g_s.uv);
         put(s, g_s.fog);
         put(s, g_s.xyz);
-        put(s, uint64_t{0}); // obsolete
+        put(s, uint64_t{0});
         const uint64_t trxpos = g_s.reg[0x51], trxreg = g_s.reg[0x52];
         const int32_t w = static_cast<int32_t>(trxreg & 0xfff), h = static_cast<int32_t>((trxreg >> 32) & 0xfff);
         const int32_t dx = static_cast<int32_t>((trxpos >> 32) & 0x7ff), dy = static_cast<int32_t>((trxpos >> 48) & 0x7ff);
-        put(s, int32_t{0}); // m_tr.x, y
+        put(s, int32_t{0});
         put(s, int32_t{0});
         put(s, w);
         put(s, h);
-        put(s, g_s.reg[0x50]); // m_blit, m_pos, m_reg
+        put(s, g_s.reg[0x50]);
         put(s, trxpos);
         put(s, trxreg);
         for (int32_t r : {dx, dy, dx + w, dy + h})
             put(s, r);
-        put(s, int32_t{0}); // total, start, end: no transfer in progress
         put(s, int32_t{0});
         put(s, int32_t{0});
-        put(s, uint8_t{1}); // write
+        put(s, int32_t{0});
+        put(s, uint8_t{1});
         s.insert(s.end(), vram.begin(), vram.end());
-        for (int i = 0; i < 4; ++i) // GIFPath tag and reg: idle
+        for (int i = 0; i < 4; ++i)
         {
             s.insert(s.end(), 16, 0);
             put(s, uint32_t{0});
@@ -290,8 +256,6 @@ namespace
         return r;
     }
 
-    // Record 0x40: VU1 micro + data memory, VIFRegisters (23 words), then VF[32][4], VI[16], ACC[4], Q, P, I, R, MAC,
-    // clip, status.
     void writeVu1State()
     {
         if (g_pcsx2)
@@ -362,7 +326,7 @@ namespace
 
         const uint32_t serialSize = sizeof(kSerial) - 1;
         const uint32_t header[] = {kStateVersion, static_cast<uint32_t>(state.size()), 36, serialSize, kCrc, 0, 0,
-                                   36 + serialSize, 0}; // GSDumpHeader: no screenshot
+                                   36 + serialSize, 0};
         const uint32_t lead[] = {0xffffffffu, static_cast<uint32_t>(sizeof(header)) + serialSize};
         std::fwrite(lead, sizeof(lead), 1, g_out);
         std::fwrite(header, sizeof(header), 1, g_out);
@@ -393,7 +357,6 @@ namespace
 
 namespace ror
 {
-    // GSPrivRegSet: the 8 KB at 0x12000000, registers 16 bytes apart (also what PCSX2's live GS gets, ror_gs.cpp).
     void gsPrivRegs(PS2Runtime &runtime, bool field, std::vector<uint8_t> &r)
     {
         r.assign(8192, 0);
@@ -415,7 +378,7 @@ namespace ror
         at(0xd0, g.extwrite);
         at(0xe0, g.bgcolor);
         const uint64_t csr = g.csr.load(std::memory_order_relaxed);
-        at(0x1000, field ? (csr | 0x2000u) : (csr & ~0x2000ull)); // CSR.FIELD: MTGS passes field = FIELD ? 0 : 1
+        at(0x1000, field ? (csr | 0x2000u) : (csr & ~0x2000ull));
         at(0x1010, g.imr);
         at(0x1040, g.busdir);
         at(0x1080, g.siglblid);

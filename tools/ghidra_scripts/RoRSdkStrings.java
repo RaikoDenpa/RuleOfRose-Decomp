@@ -1,13 +1,3 @@
-// Phase 2 step 3b: name Sony library functions from their own diagnostic strings.
-//
-// Sony libraries print messages prefixed with the reporting function's name, e.g.
-// "sceGsSyncPath: DMA Ch.1 does not terminate\r\n". A function is renamed to <id> when
-//   - it references at least one string matching ^(_?sce[A-Z]\w*)(\(\))?\s*:  and all such strings name the same <id>,
-//   - no other function references a string with that same <id> prefix, and
-//   - the function still has a default (FUN_) name.
-// "lib<name>:" prefixes only attribute the function to a library (reported, not renamed).
-//
-// Args: [outFile]  optional TSV report
 //@category RuleOfRose
 
 import java.io.*;

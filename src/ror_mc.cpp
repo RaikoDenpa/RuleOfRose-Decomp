@@ -1,15 +1,3 @@
-// Memory-card seam: libmc on host folders, one per card slot (notes/port.md milestone 6, "Saving").
-//
-//   ROR_MC_DIR (default memcard/ in the working folder, the run folder under build.py run)
-//     slot1/   port 0: always inserted, formatted (created at the first call)
-//     slot2/   port 1: inserted only when the folder exists
-//
-// A guest path /BESLES-54218xxx/file is the file slotN/BESLES-54218xxx/file on the host. The game's card module
-// (0x188604..0x18a718, one wrapper per call) starts each call and then polls sceMcSync 0x24fb98 for its result, as
-// libmc's asynchronous IOP side works; here every call completes at once and sceMcSync hands out the stored result.
-// Result codes and command numbers are libmc's (0 succeed, -1 changed/new card, -2 not formatted, -4 no entry,
-// -5 denied, -6 not empty, -7 too many handles; commands GetInfo 1 ... Rename 0x13). "No card" -10 UNVERIFIED (any
-// other value is "error" to 0x188604). Directory entries: libmc's sceMcTblGetDir (64 bytes).
 #include "ror.h"
 
 #include <algorithm>
@@ -29,7 +17,7 @@ namespace fs = std::filesystem;
 namespace
 {
     constexpr int32_t kNoCard = -10, kNoEntry = -4, kDenied = -5, kNotEmpty = -6, kTooManyFiles = -7;
-    constexpr uint32_t kCardKb = 8000;  // free clusters (1 KB) of an empty 8 MB card, as the placeholder reported
+    constexpr uint32_t kCardKb = 8000;
     constexpr uint16_t kAttrDir = 0x8427, kAttrFile = 0x8497;
 
     struct Pending
@@ -47,7 +35,7 @@ namespace
 
     struct Listing
     {
-        std::vector<std::vector<uint8_t>> entries;  // 64-byte sceMcTblGetDir records
+        std::vector<std::vector<uint8_t>> entries;
         size_t next = 0;
     };
 
@@ -84,8 +72,6 @@ namespace
 
     fs::path slotRoot(uint32_t port) { return g_root / (port == 0 ? "slot1" : "slot2"); }
 
-    // Guest path (absolute, or relative to the port's current directory) -> normalised "/a/b"; false if it leaves
-    // the card.
     bool normalise(uint32_t port, const std::string &name, std::string &out)
     {
         std::vector<std::string> parts;
@@ -123,7 +109,6 @@ namespace
         return p;
     }
 
-    // libmc's wildcards: '*' any run, '?' one character.
     bool match(const char *pat, const char *s)
     {
         if (!*pat)
@@ -173,8 +158,6 @@ namespace
         return e;
     }
 
-    // Clusters in use: each file rounded up to 1 KB, one per directory (UNVERIFIED: libmc's FAT keeps two entries
-    // per cluster).
     uint32_t usedKb(uint32_t port)
     {
         uint64_t kb = 0;
@@ -194,15 +177,13 @@ void ror_sceMcInit(uint8_t *, R5900Context *ctx, PS2Runtime *)
     ror::ret(ctx, 0);
 }
 
-// sceMcGetInfo(port, slot, type*, free*, format*): the first call on an inserted card says "new card" (-1), as libmc
-// does after a card change; 0x188604 then retries and gets 0.
 void ror_sceMcGetInfo(uint8_t *rdram, R5900Context *ctx, PS2Runtime *)
 {
     const uint32_t port = ror::arg(ctx, 0) & 1;
     const uint32_t type = ror::arg(ctx, 2), freeOut = ror::arg(ctx, 3), format = ror::arg(ctx, 4);
     const bool in = present(port);
     if (type)
-        ror::wr32(rdram, type, in ? 2 : 0);  // 2 = PS2 card
+        ror::wr32(rdram, type, in ? 2 : 0);
     if (freeOut)
         ror::wr32(rdram, freeOut, in ? kCardKb - usedKb(port) : 0);
     if (format)
@@ -212,7 +193,6 @@ void ror_sceMcGetInfo(uint8_t *rdram, R5900Context *ctx, PS2Runtime *)
     accept(ctx, 1, result);
 }
 
-// sceMcOpen(port, slot, name, mode): mode 1 read, 2 write, 3 both, | 0x200 create. Result: a descriptor >= 0.
 void ror_sceMcOpen(uint8_t *rdram, R5900Context *ctx, PS2Runtime *)
 {
     const uint32_t port = ror::arg(ctx, 0) & 1, mode = ror::arg(ctx, 3);
@@ -264,7 +244,6 @@ void ror_sceMcClose(uint8_t *, R5900Context *ctx, PS2Runtime *)
     accept(ctx, 3, 0);
 }
 
-// sceMcSeek(fd, offset, origin 0 set / 1 current / 2 end): the new position.
 void ror_sceMcSeek(uint8_t *, R5900Context *ctx, PS2Runtime *)
 {
     const auto it = g_files.find(ror::sarg(ctx, 0));
@@ -275,7 +254,6 @@ void ror_sceMcSeek(uint8_t *, R5900Context *ctx, PS2Runtime *)
     accept(ctx, 4, static_cast<int32_t>(std::ftell(it->second.f)));
 }
 
-// sceMcRead(fd, buffer, size) / sceMcWrite(fd, buffer, size): bytes transferred.
 void ror_sceMcRead(uint8_t *rdram, R5900Context *ctx, PS2Runtime *)
 {
     const auto it = g_files.find(ror::sarg(ctx, 0));
@@ -309,7 +287,6 @@ void ror_sceMcFlush(uint8_t *, R5900Context *ctx, PS2Runtime *)
     accept(ctx, 0xa, it == g_files.end() ? kNoEntry : 0);
 }
 
-// 0x24f680(port, slot, name): libmc's mkdir (an open with the directory flag, command 0xb). An existing name: -4.
 void ror_sceMcMkdir(uint8_t *rdram, R5900Context *ctx, PS2Runtime *)
 {
     const uint32_t port = ror::arg(ctx, 0) & 1;
@@ -328,7 +305,6 @@ void ror_sceMcMkdir(uint8_t *rdram, R5900Context *ctx, PS2Runtime *)
     accept(ctx, 0xb, result);
 }
 
-// sceMcChdir(port, slot, new directory, current directory out): the out buffer gets the directory before the change.
 void ror_sceMcChdir(uint8_t *rdram, R5900Context *ctx, PS2Runtime *)
 {
     const uint32_t port = ror::arg(ctx, 0) & 1;
@@ -354,8 +330,6 @@ void ror_sceMcChdir(uint8_t *rdram, R5900Context *ctx, PS2Runtime *)
     accept(ctx, 0xc, result);
 }
 
-// sceMcGetDir(port, slot, name, mode, maxent, table): mode 0 lists the entries matching name's last component (a
-// subdirectory lists "." and ".." first, as a real card), mode 1 continues the listing; result = entries written.
 void ror_sceMcGetDir(uint8_t *rdram, R5900Context *ctx, PS2Runtime *)
 {
     const uint32_t port = ror::arg(ctx, 0) & 1, mode = ror::arg(ctx, 3), table = ror::arg(ctx, 5);
@@ -398,7 +372,6 @@ void ror_sceMcGetDir(uint8_t *rdram, R5900Context *ctx, PS2Runtime *)
     accept(ctx, 0xd, n);
 }
 
-// sceMcDelete(port, slot, name): a file, or an empty directory (else -6).
 void ror_sceMcDelete(uint8_t *rdram, R5900Context *ctx, PS2Runtime *)
 {
     const uint32_t port = ror::arg(ctx, 0) & 1;
@@ -419,7 +392,6 @@ void ror_sceMcDelete(uint8_t *rdram, R5900Context *ctx, PS2Runtime *)
     accept(ctx, 0xf, result);
 }
 
-// Format / unformat: our cards are always formatted; neither erases the host folder (logged).
 void ror_sceMcFormat(uint8_t *, R5900Context *ctx, PS2Runtime *)
 {
     ror::log("memcard: format %u ignored (the host folder is kept)", (ror::arg(ctx, 0) & 1) + 1);
@@ -432,13 +404,11 @@ void ror_sceMcUnformat(uint8_t *, R5900Context *ctx, PS2Runtime *)
     accept(ctx, 0x11, present(ror::arg(ctx, 0) & 1) ? 0 : kNoCard);
 }
 
-// sceMcGetEntSpace(port, slot, path): free directory entries (UNVERIFIED count; the placeholder's 1000).
 void ror_sceMcGetEntSpace(uint8_t *, R5900Context *ctx, PS2Runtime *)
 {
     accept(ctx, 0x12, present(ror::arg(ctx, 0) & 1) ? 1000 : kNoCard);
 }
 
-// 0x250648(port, slot, old path, new name): libmc's rename (FileInfo RPC 0xe with the name flag 0x10, command 0x13).
 void ror_sceMcRename(uint8_t *rdram, R5900Context *ctx, PS2Runtime *)
 {
     const uint32_t port = ror::arg(ctx, 0) & 1;
@@ -462,7 +432,6 @@ void ror_sceMcRename(uint8_t *rdram, R5900Context *ctx, PS2Runtime *)
     accept(ctx, 0x13, result);
 }
 
-// sceMcSync(mode, cmd*, result*) 0x24fb98: 1 with the finished call's command and result, -1 if none is pending.
 void ror_sceMcSync(uint8_t *rdram, R5900Context *ctx, PS2Runtime *)
 {
     if (!g_mc.pending)

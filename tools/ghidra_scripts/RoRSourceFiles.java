@@ -1,16 +1,3 @@
-// Phase 2 step 2: attribute .text functions to source files (translation units) and tag them in Ghidra.
-//
-// Evidence, strongest first:
-//   direct  the function references a "<dir>/<file>.cpp" string (__FILE__ passed to an assert handler or
-//           debug allocator). __FILE__ inside a header gives the header path, so a .cpp path is always own-TU.
-//   run     unreferenced functions lying between two functions of the same TU, with no other TU in between
-//           (gcc emits a TU's functions contiguously, and ld lays TUs out in link order).
-//   rodata  every .rodata address the function references lies inside exactly one TU's rodata span
-//           (span = min..max .rodata address referenced by that TU's direct/run functions).
-// Functions get Ghidra function tags "src:<path>" (direct) or "src~<method>:<path>" (inferred).
-// Linkonce (.gnu.linkonce.t.*) functions are inline/template code and are not attributed.
-//
-// Args: <outDir>  writes funcs.tsv (one row per .text function) and rodata.tsv (TU rodata spans).
 //@category RuleOfRose
 
 import java.io.*;
@@ -39,7 +26,6 @@ public class RoRSourceFiles extends GhidraScript {
         mem = currentProgram.getMemory();
         MemoryBlock text = mem.getBlock(".text"), ro = mem.getBlock(".rodata");
 
-        // path strings in .rodata
         Map<Address, String> paths = new HashMap<>();
         for (Address a = ro.getStart(); a.compareTo(ro.getEnd()) < 0; ) {
             Address s = a;
@@ -50,7 +36,6 @@ public class RoRSourceFiles extends GhidraScript {
             if (sb.toString().matches(PATH_RE)) paths.put(s, sb.toString());
         }
 
-        // per-function references
         List<Fn> fns = new ArrayList<>();
         for (Function f : currentProgram.getFunctionManager().getFunctions(new AddressSet(text.getStart(), text.getEnd()), true)) {
             Fn x = new Fn(); x.f = f;
@@ -58,8 +43,6 @@ public class RoRSourceFiles extends GhidraScript {
                 for (Reference r : ins.getReferencesFrom()) {
                     Address t = r.getToAddress();
                     if (!ro.contains(t)) continue;
-                    // Ghidra's propagation leaves references to a lui's bare upper half (0x300000 etc.) on later
-                    // instructions; a 64K-aligned target is treated as one of those, not as a real data reference.
                     if ((t.getOffset() & 0xffff) == 0) continue;
                     String p = paths.get(t);
                     if (p != null) { if (p.endsWith(".h") || p.endsWith(".hpp")) x.hdr.add(p); else x.cpp.add(p); }
@@ -71,14 +54,11 @@ public class RoRSourceFiles extends GhidraScript {
             fns.add(x);
         }
 
-        // runs between same-file direct functions
         fillRuns(fns, "direct", "run");
 
-        // rodata spans per TU, then attribute by rodata
         Map<String, long[]> span = spans(fns);
         if (getScriptArgs().length > 1 && getScriptArgs()[1].equals("debug"))
             for (Map.Entry<String, long[]> e : span.entrySet()) println("SPAN " + e.getKey() + " " + Long.toHexString(e.getValue()[0]) + "-" + Long.toHexString(e.getValue()[1]));
-        // code window per file: strictly between the code of the files before/after it in rodata (link) order
         Map<String, long[]> code = codeExtents(fns);
         List<String> order = new ArrayList<>(span.keySet());
         order.sort(Comparator.comparingLong(f -> anchors.get(f)));
@@ -104,11 +84,9 @@ public class RoRSourceFiles extends GhidraScript {
             if (ep <= window.get(hit)[0] || ep >= window.get(hit)[1]) continue;
             x.file = hit; x.method = "rodata"; byRo++;
         }
-        // runs again, now that rodata-attributed functions can close gaps
         fillRuns(fns, null, "run");
         extendByClass(fns);
 
-        // tags
         FunctionTagManager tm = currentProgram.getFunctionManager().getFunctionTagManager();
         int tagged = 0;
         for (Fn x : fns) {
@@ -138,8 +116,6 @@ public class RoRSourceFiles extends GhidraScript {
         }
     }
 
-    // An unattributed run of functions bounded on both sides by the same file (by functions whose method is
-    // `seed`, or any attributed function when seed is null) is attributed to that file.
     void fillRuns(List<Fn> fns, String seed, String method) {
         int last = -1;
         for (int i = 0; i < fns.size(); i++) {
@@ -168,8 +144,6 @@ public class RoRSourceFiles extends GhidraScript {
         return code;
     }
 
-    // Grow each attributed segment outward over unattributed neighbours that are methods of a class whose
-    // attributed methods all sit in that one file.
     void extendByClass(List<Fn> fns) {
         Map<String, Set<String>> classFiles = new HashMap<>();
         for (Fn x : fns) {
@@ -197,9 +171,6 @@ public class RoRSourceFiles extends GhidraScript {
         return n == null || n.isGlobal() ? null : n.getName(true);
     }
 
-    // ld lays out each TU's .rodata in link order, and a TU's own .cpp path string lives in its .rodata. So a TU's
-    // span is the min..max of its functions' rodata references that fall strictly between the previous and next
-    // TU's path strings (anchors); references outside that window (shared tables, artefacts) are ignored.
     Map<String, Long> anchors = new HashMap<>();
 
     Map<String, long[]> spans(List<Fn> fns) {

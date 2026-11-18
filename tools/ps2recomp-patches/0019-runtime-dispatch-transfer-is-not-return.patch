@@ -1,33 +1,22 @@
 Subject: ps2xRuntime: a transfer to the dispatcher is not a return, even with pc at the callee's entry
 
-dispatchGuestBranch treats a callee that comes back with ctx->pc still at its entry as having returned without
-setting pc (stubs, overrides) and continues at the fallthrough. But generated code also comes back when it leaves
-for the dispatcher (a checkpoint at a call or back edge, a jump, a missing target) with ctx->pc where execution must
-resume, and that can be the same entry: a checkpoint at a recursive call to the function an outer call is in.
-Rule of Rose (frame 1531 after the A164 caption): 0x226340 -> 0x2265f0 -> callback 0x2265c0 -> 0x221400 ->
-0x221298 -> 0x2265f0, with the TIMER2 interrupt making the checkpoint due at the inner call. The outer call took
-the transfer for a return, 0x226340 ran its epilogue (ld ra, 0(sp); jr ra; addiu sp, 16) on the inner frames'
-stack and jumped to a saved s0 (0x6744f0, data). Transfers are now counted (m_guestTransfers, also in
-eeCheckpointDue); the entry heuristic applies only when none happened inside the callee.
-
 diff --git a/ps2xRuntime/include/ps2_runtime.h b/ps2xRuntime/include/ps2_runtime.h
+index f28f9dc..5c11e0f 100644
 --- a/ps2xRuntime/include/ps2_runtime.h
 +++ b/ps2xRuntime/include/ps2_runtime.h
-@@ -523,6 +523,10 @@
+@@ -513,6 +513,7 @@ private:
      VU1Interpreter m_vu1{VU1Interpreter::Unit::VU1};
      R5900Context m_cpuContext;
      std::unique_ptr<EeScheduler> m_eeScheduler;
-+    // Transfers to the dispatcher (generated code returning with pc where execution must resume): a checkpoint at a
-+    // call or back edge, a jump, a missing target. dispatchGuestBranch compares it around a call to tell a callee that
-+    // returned without setting pc from one that left for the dispatcher with pc at its own entry.
 +    uint64_t m_guestTransfers = 0;
      mutable std::mutex m_eeKernelStateMutex;
      std::unordered_map<int, std::vector<EeExitHandlerRegistration>> m_eeExitHandlers;
      std::unordered_map<uint32_t, uint32_t> m_eeSyscallOverrides;
 diff --git a/ps2xRuntime/src/lib/ps2_runtime.cpp b/ps2xRuntime/src/lib/ps2_runtime.cpp
+index dd2fe42..9ff5923 100644
 --- a/ps2xRuntime/src/lib/ps2_runtime.cpp
 +++ b/ps2xRuntime/src/lib/ps2_runtime.cpp
-@@ -1371,6 +1371,7 @@
+@@ -1371,6 +1371,7 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
      // this charge bounds straight-line call chains that have no local loop.
      if (m_eeScheduler && m_eeScheduler->checkpointDue(EeScheduler::kGuestDispatchCycles))
      {
@@ -35,7 +24,7 @@ diff --git a/ps2xRuntime/src/lib/ps2_runtime.cpp b/ps2xRuntime/src/lib/ps2_runti
          return false;
      }
  
-@@ -1382,6 +1383,7 @@
+@@ -1382,6 +1383,7 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
          }
  
          ctx->pc = targetPc;
@@ -43,7 +32,7 @@ diff --git a/ps2xRuntime/src/lib/ps2_runtime.cpp b/ps2xRuntime/src/lib/ps2_runti
          return false;
      }
  
-@@ -1401,14 +1403,17 @@
+@@ -1401,14 +1403,17 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
          {
              ctx->pc = targetPc;
              // if you need the app to keep open to open debug pannel change this to false
@@ -61,20 +50,16 @@ diff --git a/ps2xRuntime/src/lib/ps2_runtime.cpp b/ps2xRuntime/src/lib/ps2_runti
      targetFn(rdram, ctx, this);
  
      if (isStopRequested() || ctx->pc == 0u)
-@@ -1416,7 +1421,11 @@
+@@ -1416,7 +1421,7 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
          return false;
      }
  
 -    if (ctx->pc == entryPc)
-+    // pc still at the callee's entry: it returned without setting pc (a stub or override). Not after a transfer inside
-+    // it: then pc is where the dispatcher must resume, which is this entry when the transfer happened at a recursive
-+    // call to the same function (e.g. Rule of Rose 0x2265f0 -> 0x2265c0 -> 0x221400 -> 0x221298 -> 0x2265f0); taking it
-+    // for a return ran the outer caller's epilogue on the inner frames' stack.
 +    if (ctx->pc == entryPc && m_guestTransfers == transfers)
      {
          ctx->pc = fallthroughPc;
      }
-@@ -2250,7 +2259,12 @@
+@@ -2249,7 +2254,12 @@ void PS2Runtime::postEeEvent(EeEvent event)
  
  bool PS2Runtime::eeCheckpointDue(uint32_t cycles) noexcept
  {
@@ -82,7 +67,7 @@ diff --git a/ps2xRuntime/src/lib/ps2_runtime.cpp b/ps2xRuntime/src/lib/ps2_runti
 +    const bool due = m_eeScheduler->checkpointDue(cycles);
 +    if (due)
 +    {
-+        ++m_guestTransfers; // a back edge returns to the dispatcher with pc at the loop target
++        ++m_guestTransfers;
 +    }
 +    return due;
  }

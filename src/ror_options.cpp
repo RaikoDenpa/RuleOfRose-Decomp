@@ -1,18 +1,3 @@
-// Port options: port.ini in the working folder (ROR_PORT_INI overrides the path). Lines "name = value", '#' comments.
-// Without the file every option is off, which is how the regression tools run.
-//
-//   skip_intro = 1   boot straight to the title's "press Start": the logo and notice pages, CP_LOGO.PSS and the attract
-//                    movie MV00_AD.PSS are skipped. It sets the game's own flag 0x2ac1cc: the title state machine
-//                    0x1aaae4 goes from state 0 straight to 0x16 ("press Start") when it is 1, and sets it in state 1,
-//                    so the game itself shows the intro only on the first visit to the title.
-//
-//   fullscreen = 1                 borderless fullscreen at start (F11 toggles it in the game; ror_window.cpp)
-//   window_width / window_height   the window's client size at start (default the runtime's 640x448; it stays
-//                                  resizable, and PCSX2's GS follows the size: ror_pcsx2host_win32.cpp)
-//   volume = 0..100                raylib's master volume: the game's sound and the movies
-//
-// The fast-forward key (hold to run the game at 4x) is a pad.ini entry, fast_forward (ror_pad.cpp). The launcher
-// (launcher/) writes this file from its settings window.
 #include "ror.h"
 
 #include <cstdlib>

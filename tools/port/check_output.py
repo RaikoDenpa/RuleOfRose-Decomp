@@ -1,15 +1,4 @@
-"""Check PS2Recomp's generated C++ against the allowlist and our jump tables (run after every recompile).
-
-Fails (exit 1) when
-  - a function is bound to a runtime handler (listed in ps2_recompiled_stubs.h) that bindings.tsv does not list
-    with that handler, or one in game code (gen_config.GAME_RANGES) is bound at all;
-  - a bindings.tsv stub/syscall row did not become a stub, or an override row has no generated function to replace;
-  - a `jr reg` (not $ra) has no resolved case list, unless it is in gen_config.DYNAMIC_JR;
-  - a generated function calls another one directly instead of through the function table (overrides would be
-    bypassed; patch 0002 routes tail calls through the table).
-
-  python tools/port/check_output.py [--output DIR] [--dump]
-"""
+"""Check PS2Recomp's generated C++ against the allowlist and our jump tables (run after every recompile)."""
 import argparse, glob, os, re, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -32,7 +21,6 @@ def main():
     for row in g.tsv(args.bindings):
         (traces if row[1] == 'trace' else want)[int(row[0], 16)] = (row[1], row[2], row[3])
 
-    # Stubs: the header lists them all; each one's file names the handler it calls.
     stubs = {}
     for name in re.findall(r'void (\w+_0x[0-9a-f]+)\(', open(os.path.join(args.output, 'ps2_recompiled_stubs.h'), encoding='utf-8').read()):
         a = int(name.rsplit('_0x', 1)[1], 16)
@@ -53,7 +41,6 @@ def main():
         if kind in ('override', 'trace') and not glob.glob(os.path.join(args.output, '*_0x%x.cpp' % a)):
             errors.append('%#x %s: %s target has no generated function' % (a, gname, kind))
 
-    # Indirect jumps: every non-ra jr needs a case list. Direct calls between generated functions are refused.
     sites = unresolved = direct = 0
     for path in glob.glob(os.path.join(args.output, '*_0x*.cpp')):
         lines = open(path, encoding='utf-8', errors='replace').read().split('\n')

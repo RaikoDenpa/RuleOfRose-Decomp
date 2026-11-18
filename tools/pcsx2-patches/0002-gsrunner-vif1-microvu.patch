@@ -1,15 +1,7 @@
 Subject: pcsx2-gsrunner: -vif1, a ROR_GSDUMP_VIF1 dump through VIF1 + microVU1 (MTVU) + GS without VMManager::Initialize
 
-Rule of Rose port, renderer plan step 0b (notes/renderer.md 6.8). On top of 0001. The VM memory map, microVU1 + the
-VIF unpackers, the VU1/VIF1/GIF resets and MTGS are brought up by hand; per loop the dump's GS state, its VU1 state
-(record 0x40, loaded through the VU thread), its VIF1 input streams (record 0x41) into VIF1transfer and its PATH3
-transfers into the GIF unit. PATH1/PATH2 records are skipped: VIF1 and VU1 produce them. -vif1-nofeed drops the VIF1
-streams (control run). Two pieces of VMManager's CPU-thread init/shutdown are needed: x86Emitter::use_avx (else
-microVU's AVX2 block compare is emitted without VEX, never matches, and microVU recompiles forever) and
-SysMemory::Release at exit (else SharedMemoryMappingArea asserts). Against PCSX2 v2.8.2 (fd9d310).
-
 diff --git a/pcsx2-gsrunner/Main.cpp b/pcsx2-gsrunner/Main.cpp
-index 0e31105..1266cd1 100644
+index dac1dda..8b8bea6 100644
 --- a/pcsx2-gsrunner/Main.cpp
 +++ b/pcsx2-gsrunner/Main.cpp
 @@ -36,6 +36,14 @@
@@ -30,9 +22,9 @@ index 0e31105..1266cd1 100644
 @@ -87,6 +95,8 @@ static bool s_no_console = false;
  static u32 s_dump_frame_number = 0;
  static u32 s_loop_number = s_loop_count;
- static bool s_direct = false; // -direct: no VMManager::Initialize, the dump's streams go straight to MTGS
-+static bool s_vif1 = false;   // -vif1: a ROR_GSDUMP_VIF1 dump through PCSX2's VIF1 + microVU (MTVU) + GS, no VM
-+static bool s_vif1_nofeed = false; // -vif1-nofeed: control run, the VIF1 streams are dropped
+ static bool s_direct = false;
++static bool s_vif1 = false;
++static bool s_vif1_nofeed = false;
  static double s_last_internal_draws = 0;
  static double s_last_draws = 0;
  static double s_last_render_passes = 0;
@@ -54,16 +46,10 @@ index 0e31105..1266cd1 100644
  			else if (CHECK_ARG_PARAM("-dump"))
  			{
  				std::string str(argv[++i]);
-@@ -1068,6 +1089,267 @@ static void CPUThreadMainDirect(const std::string filename, std::atomic<int>* re
+@@ -1065,6 +1086,253 @@ static void CPUThreadMainDirect(const std::string filename, std::atomic<int>* re
  	GSRunner::StopPlatformMessagePump();
  }
  
-+// -vif1 (Rule of Rose port, renderer plan step 0b): a dump written with ROR_GSDUMP_VIF1 (gsdump_F_vif1.gs) replayed
-+// through PCSX2's VIF1 (newVif unpackers) + microVU1 on the MTVU thread + GS, still without VMManager::Initialize: the
-+// VM memory map (VU memories and the recompilers' caches live in it), microVU1 + VIF unpackers, the VU1/VIF1/GIF
-+// resets, MTGS. Then per loop: the dump's GS state, its VU1 state (record 0x40, loaded through the VU thread as
-+// mtvuFreeze does), its VIF1 input streams (0x41) into VIF1transfer, its PATH3 transfers into the GIF unit. Its PATH1
-+// and PATH2 transfers are skipped: VIF1 and VU1 produce them here.
 +namespace
 +{
 +	struct Vif1Dump
@@ -84,7 +70,7 @@ index 0e31105..1266cd1 100644
 +		out.file = std::move(*data);
 +		u32 header_size, state_size;
 +		std::memcpy(&header_size, out.file.data() + 4, 4);
-+		std::memcpy(&state_size, out.file.data() + 8 + 4, 4); // GSDumpHeader.state_size
++		std::memcpy(&state_size, out.file.data() + 8 + 4, 4);
 +		out.state = out.file.data() + 8 + header_size;
 +		out.state_size = state_size;
 +		out.regs = out.state + state_size;
@@ -93,9 +79,6 @@ index 0e31105..1266cd1 100644
 +		return out.packets <= out.end;
 +	}
 +
-+	// Record 0x40 (src/ror_gsdump.cpp): VU1 micro + data memory, PS2Recomp's VIFRegisters (23 words: stat fbrst err mark
-+	// cycle mode num mask code itops base ofst tops itop top row[4] col[4]), VF[32][4], VI[16], ACC[4], Q, P, I, R, MAC,
-+	// clip, status.
 +	void LoadVu1State(const u8* s)
 +	{
 +		std::memcpy(VU1.Micro, s, 0x4000);
@@ -143,8 +126,6 @@ index 0e31105..1266cd1 100644
 +		vu1Thread.WriteVFRegs(&VU1.VF[0]);
 +	}
 +
-+	// One VIF1 input stream; a stall (FLUSH waiting for the GIF paths or the VU) ends VIF1transfer early with the rest in
-+	// vif1.vifpacketsize: wait for the VU, clear the stall, continue.
 +	u32 s_vif1_stalls = 0;
 +	void FeedVif1(const u8* data, u32 size)
 +	{
@@ -152,7 +133,7 @@ index 0e31105..1266cd1 100644
 +		std::memcpy(buf.data(), data, size);
 +		u32* p = buf.data();
 +		int words = static_cast<int>(size / 4);
-+		vif1ch.chcr.STR = true; // lets a FLUSH stall instead of retrying forever
++		vif1ch.chcr.STR = true;
 +		for (int guard = 0; words > 0; guard++)
 +		{
 +			VIF1transfer(p, words, true);
@@ -174,14 +155,12 @@ index 0e31105..1266cd1 100644
 +		}
 +		vif1ch.chcr.STR = false;
 +	}
-+} // namespace
++}
 +
 +static void CPUThreadMainVif1(const std::string filename, std::atomic<int>* ret)
 +{
 +	ret->store(EXIT_FAILURE);
 +	VMManager::ApplySettings();
-+	// As VMManager::Internal::CPUThreadInitialize: the emitter has to know about AVX, or microVU's block compare
-+	// (generated for AVX2 with ymm registers) is encoded without VEX, never matches and microVU recompiles forever.
 +	FPControlRegister::SetCurrent(FPControlRegister::GetDefault());
 +	x86Emitter::use_avx = g_cpu.vectorISA >= ProcessorFeatures::VectorISA::AVX;
 +
@@ -199,7 +178,7 @@ index 0e31105..1266cd1 100644
 +		GSRunner::StopPlatformMessagePump();
 +		return;
 +	}
-+	CpuMicroVU1.Reserve(); // also opens the MTVU thread
++	CpuMicroVU1.Reserve();
 +	VifUnpackSSE_Init();
 +	SysMemory::Reset();
 +	CpuVU1 = &CpuMicroVU1;
@@ -234,13 +213,13 @@ index 0e31105..1266cd1 100644
 +		for (const u8* p = dump.packets; p < dump.end;)
 +		{
 +			const u8 type = *p++;
-+			if (type == 0) // Transfer
++			if (type == 0)
 +			{
 +				const u8 path = *p++;
 +				u32 size;
 +				std::memcpy(&size, p, 4);
 +				p += 4;
-+				if (path == 2) // PATH3: into the GIF unit, as GSDumpReplayer does
++				if (path == 2)
 +				{
 +					Gif_Path& gifPath = gifUnit.gifPath[GIF_PATH_3];
 +					gifPath.CopyGSPacketData(const_cast<u8*>(p), size);
@@ -254,7 +233,7 @@ index 0e31105..1266cd1 100644
 +					skipped++;
 +				p += size;
 +			}
-+			else if (type == 1) // VSync
++			else if (type == 1)
 +			{
 +				p++;
 +				const auto w = std::chrono::steady_clock::now();
@@ -264,7 +243,7 @@ index 0e31105..1266cd1 100644
 +				MTGS::RunOnGSThread([frame]() { s_dump_frame_number = frame; });
 +				MTGS::PostVsyncStart(false);
 +			}
-+			else if (type == 2) // ReadFIFO2
++			else if (type == 2)
 +			{
 +				u32 size;
 +				std::memcpy(&size, p, 4);
@@ -272,7 +251,7 @@ index 0e31105..1266cd1 100644
 +				std::unique_ptr<u8[]> arr(new u8[(size + 1) * 16]);
 +				MTGS::InitAndReadFIFO(arr.get(), size);
 +			}
-+			else if (type == 3) // Registers
++			else if (type == 3)
 +			{
 +				std::memcpy(PS2MEM_GS, p, Ps2MemSize::GSregs);
 +				p += 8192;
@@ -310,7 +289,6 @@ index 0e31105..1266cd1 100644
 +	GSJoinSnapshotThreads();
 +	MTGS::WaitForClose();
 +	MTGS::ShutdownThread();
-+	// As VMManager::ShutdownCPUProviders + CPUThreadShutdown: without SysMemory::Release the memory map asserts at exit.
 +	CpuMicroVU1.Shutdown();
 +	vu1Thread.Close();
 +	dVifRelease(1);
@@ -322,13 +300,13 @@ index 0e31105..1266cd1 100644
  int main(int argc, char* argv[])
  {
  	CrashHandler::Install();
-@@ -1092,8 +1374,15 @@ int main(int argc, char* argv[])
+@@ -1089,8 +1357,15 @@ int main(int argc, char* argv[])
  	// Override settings that shouldn't be picked up from defaults or INIs.
  	GSRunner::SettingsOverride();
  
 +	if (s_vif1)
 +	{
-+		s_settings_interface.SetBoolValue("EmuCore/Speedhacks", "vuThread", true); // MTVU
++		s_settings_interface.SetBoolValue("EmuCore/Speedhacks", "vuThread", true);
 +		s_settings_interface.SetBoolValue("EmuCore/CPU/Recompiler", "EnableVU1", true);
 +	}
 +

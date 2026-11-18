@@ -1,6 +1,3 @@
-// pcsx2-ror.dll: the PCSX2 side of the Rule of Rose port (notes/renderer.md 6.5a), built inside PCSX2's own CMake
-// (tools/pcsx2-patches/0003) and linked against its core. This file: the versioned C API's open/close and the log
-// sink, which also receives PCSX2's console; the GS is gs.cpp (step 2), the VIF1 feed follows in step 3.
 #include "pcsx2/PrecompiledHeader.h"
 
 #include "ror_internal.h"
@@ -22,7 +19,6 @@ namespace
     ror_pcsx2_log_fn s_log = nullptr;
     void *s_log_user = nullptr;
 
-    // PCSX2's console (Console.WriteLn & co., any thread) into the sink, one line per message.
     void consoleSink(LOGLEVEL level, ConsoleColors, std::string_view message)
     {
         while (!message.empty() && (message.back() == '\n' || message.back() == '\r'))
@@ -33,7 +29,7 @@ namespace
                                                                                                ROR_PCSX2_LOG_INFO;
         ror_pcsx2::log(l, "PCSX2: %.*s", static_cast<int>(message.size()), message.data());
     }
-} // namespace
+}
 
 bool ror_pcsx2::isOpen()
 {

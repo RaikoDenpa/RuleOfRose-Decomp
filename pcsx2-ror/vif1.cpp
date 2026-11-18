@@ -1,9 +1,3 @@
-// VIF1 + microVU1 (renderer plan step 3, notes/renderer.md 6.5a/6.8): PCSX2's VIF1 (newVif unpackers) and microVU1 on
-// the MTVU thread, fed with the port's DMA channel 1 streams; their PATH1/PATH2 go into the same MTGS as the GS feed
-// (gs.cpp). The bring-up, the stall loop and the VU1 state record are the gsrunner's -vif1 (tools/pcsx2-patches/0002,
-// step 0b): VM memory (VU memories and the recompilers' caches live in it), microVU1 + VIF unpackers, the VU1/VIF1/GIF
-// resets; still no VMManager::Initialize, BIOS, EE or IOP. Ordering: an MSCAL puts a placeholder for its XGKICK output
-// into the MTGS ring from this (the caller's) thread, so PATH1 stays in order with our PATH3 and VSyncs.
 #include "pcsx2/PrecompiledHeader.h"
 
 #include "ror_internal.h"
@@ -33,27 +27,22 @@ namespace
     std::atomic<unsigned long long> s_streams{0};
     std::atomic<unsigned long long> s_stalls{0};
 
-    // Record 0x40 of a VIF1 GS dump (src/ror_gsdump.cpp; ROR_PCSX2_VU1_STATE_SIZE): VU1 micro + data memory, the VIF1
-    // registers as PS2Recomp's VIFRegisters (23 words: stat fbrst err mark cycle mode num mask code itops base ofst tops
-    // itop top row[4] col[4]), VF[32][4], VI[16], ACC[4], Q, P, I, R, MAC, clip, status.
     constexpr size_t kVifRegsOffset = 0x8000;
     constexpr size_t kVuRegsOffset = kVifRegsOffset + 23 * 4;
     static_assert(kVuRegsOffset + 32 * 16 + 16 * 4 + 16 + 4 * 7 == ROR_PCSX2_VU1_STATE_SIZE);
-} // namespace
+}
 
 bool ror_pcsx2::vif1Open()
 {
     if (s_open)
         return true;
-    // As VMManager::Internal::CPUThreadInitialize: the emitter has to know about AVX, or microVU's block compare
-    // (generated for AVX2 with ymm registers) is encoded without VEX, never matches and microVU recompiles forever.
     x86Emitter::use_avx = g_cpu.vectorISA >= ProcessorFeatures::VectorISA::AVX;
     if (!SysMemory::Allocate())
     {
         log(ROR_PCSX2_LOG_ERROR, "pcsx2-ror: SysMemory::Allocate failed (VIF1/VU1 need PCSX2's VM memory map)");
         return false;
     }
-    CpuMicroVU1.Reserve(); // also opens the MTVU thread
+    CpuMicroVU1.Reserve();
     VifUnpackSSE_Init();
     SysMemory::Reset();
     CpuVU1 = &CpuMicroVU1;
@@ -74,7 +63,6 @@ void ror_pcsx2::vif1Close()
 {
     if (!s_open)
         return;
-    // As VMManager::ShutdownCPUProviders + CPUThreadShutdown: without SysMemory::Release the memory map asserts at exit.
     CpuMicroVU1.Shutdown();
     vu1Thread.Close();
     dVifRelease(1);
@@ -93,9 +81,6 @@ void ror_pcsx2::vif1Counters(unsigned long long &streams, unsigned long long &st
     stalls = s_stalls.load(std::memory_order_relaxed);
 }
 
-// One stream as DMA channel 1 delivers it. A stall (FLUSH/FLUSHA waiting for the GIF paths or the VU, the -vif1
-// loop's 639 per 3 frames in evt1new20) ends VIF1transfer early with the rest in vif1.vifpacketsize: wait for the VU,
-// clear the stall, continue.
 extern "C" int ror_pcsx2_vif1_transfer(const void *data, size_t size)
 {
     if (!s_open)
@@ -106,7 +91,7 @@ extern "C" int ror_pcsx2_vif1_transfer(const void *data, size_t size)
     std::memcpy(s_buf.data(), data, size);
     u32 *p = s_buf.data();
     int words = static_cast<int>(size / 4);
-    vif1ch.chcr.STR = true; // lets a FLUSH stall instead of retrying forever
+    vif1ch.chcr.STR = true;
     for (int guard = 0; words > 0; guard++)
     {
         VIF1transfer(p, words, true);
@@ -148,11 +133,10 @@ extern "C" int ror_pcsx2_vu1_get_state(void *buf, size_t size)
         return ROR_PCSX2_E_ARG;
     if (size < ROR_PCSX2_VU1_STATE_SIZE)
         return ROR_PCSX2_E_BUFFER;
-    vu1Thread.WaitVU(); // the VU thread owns VU1's memory and registers while it runs
+    vu1Thread.WaitVU();
     u8 *s = static_cast<u8 *>(buf);
     std::memcpy(s, VU1.Micro, 0x4000);
     std::memcpy(s + 0x4000, VU1.Mem, 0x4000);
-    // STROW/STCOL land in vif1.MaskRow/MaskCol (Vif_Codes.cpp vifCode_STRow/STCol), not in vif1Regs.r0-3/c0-3.
     const u32 vr[23] = {vif1Regs.stat._u32, vif1Regs.fbrst, vif1Regs.err._u32, vif1Regs.mark,
                         static_cast<u32>(vif1Regs.cycle.cl) | (static_cast<u32>(vif1Regs.cycle.wl) << 8), vif1Regs.mode,
                         vif1Regs.num, vif1Regs.mask, vif1Regs.code, vif1Regs.itops, vif1Regs.base, vif1Regs.ofst,
@@ -177,7 +161,6 @@ extern "C" int ror_pcsx2_vu1_get_state(void *buf, size_t size)
     return ROR_PCSX2_OK;
 }
 
-// The -vif1 loader (patch 0002 LoadVu1State): into PCSX2's structures, then through the VU thread as mtvuFreeze does.
 extern "C" int ror_pcsx2_vu1_set_state(const void *buf, size_t size)
 {
     if (!s_open)

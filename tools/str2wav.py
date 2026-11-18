@@ -1,21 +1,11 @@
-"""STR sound streams (DATA/SND/XWS/S######.STR) -> WAV.
-
-A stream is headerless PS-ADPCM at 48 kHz. Ids below 100000 (voices, ambience) are mono. Ids from 100000 up (music)
-are stereo with 16-byte frame interleave (L frame, R frame, ...). Evidence: notes/formats/str.md (gamSnd 0x1e66a0 and
-0x180428 pick ADPCM stream mode 0 / 2 by id; 0x240180 splits mode 2 frame by frame; sndman 0x180900 opens it at
-48000 Hz). The game clears every frame's flag byte before upload, so in-file loop flags are ignored.
-
-Usage:
-  python str2wav.py <S######.STR> --dump
-  python str2wav.py <S######.STR> --wav <out.wav> [--mono | --stereo]
-"""
+"""STR sound streams (DATA/SND/XWS/S######.STR) -> WAV."""
 import argparse
 import os
 import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import psadpcm  # noqa: E402
+import psadpcm
 
 RATE = 48000
 STEREO_FROM_ID = 100000
@@ -34,7 +24,6 @@ def channels_for(path, force=None):
 
 
 def split_channels(data, nch):
-    """Frame interleave: frame k belongs to channel k % nch."""
     if nch == 1:
         return [data]
     out = [bytearray() for _ in range(nch)]

@@ -1,14 +1,4 @@
-"""Decode textures and CLUTs from a GS local-memory dump (src/ror_gs.cpp, ROR_GS_VRAM=1 -> gs_frame_N_*.vram).
-
-Addressing follows the GS block/column layout (the same tables as PS2Recomp's ps2_gs_psmct32.h / ps2_gs_psmt8.h).
-A CT32 CLUT stored CSM1 is a 16x16 (256 colours) or 8x2 (16 colours) block; entry i sits at x = (i & 7) | ((i >> 1) & 8),
-y = ((i >> 3) & 1) | ((i >> 4) & 0xE), i.e. index bits 3 and 4 swapped against a linear 16-wide layout.
-
-  python tools/port/gs_vram.py VRAM --clut CBP [--dump]                 print the CLUT (CT32, CSM1)
-  python tools/port/gs_vram.py VRAM --t8 TBP TBW W H --clut CBP --png OUT
-  python tools/port/gs_vram.py VRAM --t8 TBP TBW W H --clut CBP --tim2 FILE.tm2   compare indices and CLUT with a TIM2
-  python tools/port/gs_vram.py VRAM --ct32 BP BW W H --png OUT            a CT32 buffer (frame or texture)
-"""
+"""Decode textures and CLUTs from a GS local-memory dump (src/ror_gs.cpp, ROR_GS_VRAM=1 -> gs_frame_N_*.vram)."""
 import argparse, struct, sys, zlib
 
 BLOCK = [[0, 1, 4, 5, 16, 17, 20, 21], [2, 3, 6, 7, 18, 19, 22, 23], [8, 9, 12, 13, 24, 25, 28, 29],
@@ -74,7 +64,7 @@ def read_tim2(path):
     image = d[off + hdr:off + hdr + image_size]
     raw = d[off + hdr + image_size:off + hdr + image_size + clut_size]
     clut = list(struct.unpack_from('<%dI' % (clut_size // 4), raw))
-    if not clut_type & 0x80:  # CSM1 storage: entries 8-15 and 16-23 of every 32 swapped
+    if not clut_type & 0x80:
         clut = [clut[(i & ~0x18) | ((i & 8) << 1) | ((i & 0x10) >> 1)] for i in range(len(clut))]
     return w, h, image, clut
 

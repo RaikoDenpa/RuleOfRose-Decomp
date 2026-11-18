@@ -1,9 +1,3 @@
-"""Format RoRSourceFiles.java reports (funcs.tsv, rodata.tsv) into the tables of notes/source-files.md.
-
-Usage: python report_sources.py <report_dir> [--dump]
-  Writes markdown to stdout: one row per source file in code order, then the unattributed gaps between them.
-  --dump prints each contiguous code segment instead.
-"""
 import csv
 import sys
 from collections import Counter
@@ -14,7 +8,7 @@ def main():
     rows = list(csv.DictReader(open(rep + '/funcs.tsv', encoding='utf-8'), delimiter='\t'))
     spans = {r['file']: (r['rodata_lo'], r['rodata_hi'])
              for r in csv.DictReader(open(rep + '/rodata.tsv', encoding='utf-8'), delimiter='\t')}
-    segs = []  # [file, first_row_index, last_row_index]
+    segs = []
     for i, r in enumerate(rows):
         f = r['file'] or None
         if segs and segs[-1][0] == f:

@@ -1,14 +1,3 @@
-// The GS seam and its diagnostics: a raster backend that wraps PS2Recomp's GSCpuBackend (ROR_GS=cpu) or a null one
-// (ROR_GS=pcsx2: PCSX2's VIF1 + microVU1 + GS render, fed from here with DMA channel 1's streams, PATH3 and each VBlank,
-// presenting into a child window instead of raylib)
-// (installed with GS::setRasterBackend, which supports hot replacement), times the backend calls made on the game
-// thread, and for one frame (ROR_GS_TRACE=N)
-// writes every draw, CLUT load and transfer with its decoded GS state, plus the privileged display registers, to
-// ROR_GS_TRACE_OUT (default gs_frame_N.tsv). A "frame" is the span from the end of MagSystem::wait_vsync_swap N to
-// the start of N+1: kick_dma sends frame N's chain there (MagSystem::frame 0x11848c), followed by frame N+1's
-// immediate texture uploads. tools/port/gs_trace.py summarises the file.
-// ROR_SCREENSHOT=F[,F...] saves the presented frame (what the window shows) at the end of wait_vsync_swap F as
-// screen_F.png.
 #include "ror.h"
 #include "ror_pcsx2host.h"
 
@@ -136,7 +125,6 @@ namespace
 
         void BeginTransfer(const GSTransferCommand &x) override
         {
-            // Every GS->host read is logged (renderer plan: the readback measurement before step 4).
             if (x.direction == 1u)
                 ror::log("GS->host read: %ux%u %s from %u (BITBLTBUF.SBP), frame %llu", x.trxreg.rrw, x.trxreg.rrh,
                          psmName(x.bitbltbuf.spsm), x.bitbltbuf.sbp, static_cast<unsigned long long>(ror::frame()));
@@ -195,10 +183,6 @@ namespace
         std::unique_ptr<GSRasterBackend> m_inner;
     };
 
-    // ROR_GS=pcsx2: PS2Recomp's frontend still parses every GIF packet (CSR, IMR and the trace see it all), but nothing
-    // is rasterised here; PCSX2's GS renders. A GS->host read (renderer plan step 4) gets PCSX2's pixels: the transfer
-    // registers went to PCSX2 on PATH3 with the packet, so the first read fetches the whole image from its GS
-    // (MTGS::InitAndReadFIFO, after everything sent before is drawn) and the following ones serve it.
     class NullBackend final : public GSRasterBackend
     {
     public:
@@ -251,11 +235,9 @@ namespace
     };
 
     TracingBackend *g_backend = nullptr;
-    bool g_pcsx2 = false;   // PCSX2's GS renders (ROR_GS=pcsx2)
-    bool g_field = false;   // CSR.FIELD for PCSX2, alternating per VBlank
+    bool g_pcsx2 = false;
+    bool g_field = false;
 
-    // ROR_GS_VRAM=1: the 4 MB of GS local memory next to the trace, at the start and end of the frame
-    // (tools/port/gs_vram.py decodes textures and CLUTs from it).
     void dumpVram(const std::string &path)
     {
         const char *e = std::getenv("ROR_GS_VRAM");
@@ -304,8 +286,6 @@ namespace
         std::fprintf(g_out, "\n");
     }
 
-    // The frame the render thread latched last (GS::latchHostPresentationFrame, once per vsync tick), opaque. With
-    // PCSX2's GS: the next frame it presents, saved by PCSX2 (asynchronously).
     void screenshot(PS2Runtime *runtime, uint64_t frame)
     {
         if (g_pcsx2)
@@ -333,10 +313,6 @@ namespace
     }
 }
 
-// sceGsPutDrawEnv 0x25b588 (libgraph): sends the packet at a0, a GIFtag and its NLOOP A+D pairs, to the GS by GIF DMA in
-// normal mode with QWC = NLOOP + 1 (the original writes D2_QWC/MADR/CHCR 0x101). PS2Recomp's runtime stub applies 8
-// pairs read from a0 itself: it takes the GIFtag for a pair and drops the rest. gs_swap_env 0x25b908 sends the
-// double-buffer packets at +0x50 / +0x140 (15 quadwords apart) every frame: the draw environment and the frame's clear.
 void ror_sceGsPutDrawEnv(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
 {
     const uint32_t tag = ror::arg(ctx, 0);
@@ -349,13 +325,6 @@ void ror_sceGsPutDrawEnv(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     ror::ret(ctx, 0);
 }
 
-// sceGsExecStoreImage 0x25c1c0 (libgraph): reads the image a store-image packet describes into a1. The packet at a0 is
-// what the game's own sceGsSetDefStoreImage 0x25bf00 built: VIF codes at +0x00 (MSKPATH3, FLUSHA, DIRECT 6), a GIFtag at
-// +0x10 and five A+D pairs: BITBLTBUF +0x20, TRXPOS +0x30, TRXREG +0x40, FINISH +0x50, TRXDIR = 1 +0x60. PS2Recomp's
-// stub reads a 12-byte struct of its own (its sceGsSetDefLoadImage stub's layout) from a0, so with the game's packet it
-// read 0 x 1536 T8. Here: the GIF part goes on PATH3 (the original sends it by VIF1 DIRECT and reads the VIF1 FIFO
-// back), then the local->host bytes come from the GS backend (PCSX2's GS under ROR_GS=pcsx2: renderer plan step 4).
-// Caller: MagSystem::screenshot 0x11860c, the debug BMP writer, one 512 x 1 line per call.
 void ror_sceGsExecStoreImage(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
 {
     const uint32_t lp = ror::arg(ctx, 0), dst = ror::arg(ctx, 1);
@@ -382,11 +351,6 @@ void ror_sceGsExecStoreImage(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runt
     ror::ret(ctx, 0);
 }
 
-// SetGsCrt (syscall 2, wrapper 0x25f420), called only by sceGsResetGraph 0x25ae98 (sdk.md), which runs as game code:
-// it fills libgraph's parameter block 0x2f3d90 that sceGsDefDispEnv 0x25b150 builds the display environment from. The
-// BIOS sets the video timing besides SMODE2; PS2Recomp's handler sets SMODE2 only. Rule of Rose calls it once with
-// (1, 3, 0) = interlaced, PAL, field mode (engine.md): the timing registers are what the BIOS left in the real game's
-// PCSX2 GS dump of the A164 event (extracted/gsref/Rule of Rose_SLES-54218_20261027182940.gs, privileged block).
 void ror_SetGsCrt(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
 {
     const uint32_t inter = ror::arg(ctx, 0) & 1, omode = ror::arg(ctx, 1) & 0xff, ffmode = ror::arg(ctx, 2) & 1;
@@ -443,9 +407,6 @@ namespace ror
                                             },
                                             [](PS2Runtime &, void *) { ror::pcsx2WindowShutdown(); }, nullptr);
 
-        // One observer per kind (patches 0008, 0010) for the GS dumps and PCSX2's live feed. With ROR_GS=pcsx2 the VIF1
-        // sink (patch 0015) gives every DMA channel 1 stream to PCSX2's VIF1 + microVU1 instead of PS2Recomp's, so the
-        // GIF arbiter sees PATH3 only: GIF DMA, sceGsPutDrawEnv, load-image (renderer plan 6.5a).
         const bool dumps = ror::gsDumpInstall(runtime, pcsx2);
         if (!dumps && !pcsx2)
             return;
@@ -459,10 +420,9 @@ namespace ror
                 ror::log("pcsx2: a PATH%d packet reached PS2Recomp's GIF arbiter (sent to PCSX2 as PATH3)",
                          id == GifPathId::Path1 ? 1 : 2);
             ror::pcsx2Path3(data, size); });
-        // Register writes runtime handlers make outside the GIF stream: a one-register A+D packet on PATH3.
         runtime.gs().setRegisterObserver([](uint8_t reg, uint64_t value)
                                          {
-            const uint64_t packet[4] = {1ull | (1ull << 15) | (1ull << 60), 0xe, value, reg}; // NLOOP 1, EOP, PACKED, A+D
+            const uint64_t packet[4] = {1ull | (1ull << 15) | (1ull << 60), 0xe, value, reg};
             ror::gsDumpRegister(reg, value, packet);
             if (g_pcsx2)
                 ror::pcsx2Path3(packet, sizeof(packet)); });
@@ -494,7 +454,6 @@ namespace ror
         g_backend->SnapshotVram(out);
     }
 
-    // Called by wait_vsync_swap on entry (leaving = false) and exit (leaving = true) with the frame count.
     void gsFrameMark(PS2Runtime *runtime, uint64_t frame, bool leaving)
     {
         g_gameThread = std::this_thread::get_id();
@@ -502,9 +461,6 @@ namespace ror
             screenshot(runtime, frame);
         if (leaving)
             ror::gsDumpFrameMark(frame);
-        // ROR_REGIONS=F[,…]: GamMan's trigger regions after frame F (the list FUN_001e02c8 walks each frame: head
-        // GamMan+0x40+0xc290 = 0x7b7490, first node at head+4, next at node+4; x0 z0 x1 z1 at +0x10..+0x1c, y at
-        // +0x24, flags +0x30, script function id +0x74), to ror.log.
         for (const char *p = leaving ? std::getenv("ROR_REGIONS") : nullptr; p && *p;)
         {
             char *end = nullptr;
@@ -519,8 +475,6 @@ namespace ror
                     ror::log("region %08x: x %.0f..%.0f z %.0f..%.0f y %.0f flags %08x id %d", node, f(node + 0x10),
                              f(node + 0x18), f(node + 0x14), f(node + 0x1c), f(node + 0x24), ror::rd32(ram, node + 0x30),
                              static_cast<int16_t>(ror::rd32(ram, node + 0x74)));
-                    // Object regions (flags 0x1000 near, 0x4000 facing; walk 0x1e068c): object id +0x54, its record
-                    // slot +0x5c (-1 until 0x1cd0c4 finds it), radius +0x4c; the object's position at record +0x40.
                     if (ror::rd32(ram, node + 0x30) & 0x5000)
                     {
                         const int32_t slot = static_cast<int32_t>(ror::rd32(ram, node + 0x5c));
@@ -536,7 +490,6 @@ namespace ror
                 break;
             p = end + 1;
         }
-        // ROR_PEEK=F:ADDR:N[,…]: N guest words at ADDR (hex) after frame F, to ror.log.
         for (const char *p = leaving ? std::getenv("ROR_PEEK") : nullptr; p && *p;)
         {
             char *end = nullptr;

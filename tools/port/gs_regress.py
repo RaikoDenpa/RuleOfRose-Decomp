@@ -1,33 +1,4 @@
-"""Renderer regression check: three reference frames, in both GS modes (notes/renderer.md 6.7).
-
-  python tools/port/gs_regress.py [--mode cpu|pcsx2|both]   capture with the current build, replay, compare
-  python tools/port/gs_regress.py --update                   the same, then make the new captures the references
-  python tools/port/gs_regress.py --replay                   only replay the reference dumps and compare
-  python tools/port/gs_regress.py --gs-ini INI               PCSX2 with these GS settings (config/gs.ini format, e.g.
-                                                             upscale = 2), compared against the 1x references
-
-One game run per mode (build.py run, pad script below). ror-gsreplay (pcsx2-ror/gsreplay.cpp, build.py pcsx2) replays
-dumps through pcsx2-ror.dll, the code the runner's live GS uses, and saves PCSX2's picture of the dump's last VSync (the
-newest frame drawn inside the dump; deterministic, no window). References in extracted/gsref/ (gitignored: the dumps
-hold GS memory, i.e. game data):
-
-  ROR_GS=cpu    GS dump (ROR_GSDUMP, PS2Recomp's GIF output) and our presented frame (ROR_SCREENSHOT) at frame F:
-                <case>.gs, <case>_ours.png (PS2Recomp's CPU GS), <case>_pcsx2.png (the dump replayed)
-  ROR_GS=pcsx2  live: VIF1 dump (state and VU1 state from PCSX2, VIF1 streams, PATH3) at F, and PCSX2's live frame at
-                F + 2, the frame the dump's last VSync shows (game frame F + 1, displayed from the swap at F + 2):
-                <case>_vif1.gs, <case>_live.png; the dump replayed with --vif1 -> <case>_vif1.png
-
-Comparisons: cpu "ours" and "pcsx2" against their references; pcsx2 "live" against its reference, "live/cpu" against
-<case>_pcsx2.png (PCSX2's VIF1 + microVU1 live vs PCSX2's GS on PS2Recomp's VU1 output), "vif1" (the live run's dump
-replayed) against that run's live frame. A pair differs when more than 0.5 % of its pixels differ by more than 24 in a
-channel.
-
-Runs use PCSX2's default GS settings (ROR_GS_INI=none: config/gs.ini is the player's), unless --gs-ini: then the game
-run (ROR_GS_INI) and the replays (--gs-ini) use that file, the new pictures go to extracted/gsref/new-<ini name>/, and
-a picture at a larger internal resolution is box-filtered down to its 1x reference's size before the comparison, and
-a pixel counts as differing only if it differs from all 9 reference pixels around it (sharper edges are not a
-difference; a shift, a blur that grows, or a missing pass still are).
-"""
+"""Renderer regression check: three reference frames, in both GS modes (notes/renderer.md 6.7)."""
 import argparse, os, shutil, struct, subprocess, sys, zlib
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -36,13 +7,11 @@ RUN = os.path.join(ROOT, 'extracted', 'ps2recomp', 'run')
 GSREPLAY = os.path.join(ROOT, 'extracted', 'pcsx2', 'tree-run', 'ror-gsreplay.exe')
 CASES = [('sellang', 90, 'language screen'), ('title', 380, 'Title menu'), ('evt1new20', 650, 'A164 opening event')]
 PAD = '100+3:cross;200+3:start;300+3:start;400+3:cross;460+3:cross'
-LIVE_LAG = 2  # live screenshot frame - dump frame (see above)
-# Files each mode produces per case; --update copies them into the references.
+LIVE_LAG = 2
 OUTPUTS = {'cpu': ('.gs', '_ours.png', '_pcsx2.png'), 'pcsx2': ('_vif1.gs', '_live.png', '_vif1.png')}
 
 
 def read_png(path):
-    """8-bit RGB/RGBA, not interlaced -> (w, h, rows of RGB tuples flattened as bytes)."""
     d = open(path, 'rb').read()
     pos, idat, w = 8, b'', 0
     while pos < len(d):
@@ -78,7 +47,6 @@ def read_png(path):
 
 
 def downscale(w, h, px, nw, nh):
-    """RGB bytes w x h -> nw x nh (nw <= w, nh <= h), each output pixel the mean of the source pixels it covers."""
     xs = [(x * w // nw, max(x * w // nw + 1, (x + 1) * w // nw)) for x in range(nw)]
     out = bytearray()
     for y in range(nh):
@@ -92,8 +60,6 @@ def downscale(w, h, px, nw, nh):
 
 
 def compare(a, b, edges=False):
-    """-> (ok, text); a larger `a` (an upscaled render) is box-filtered to b's size. `edges`: a pixel that matches
-    one of b's 3 x 3 neighbourhood does not count."""
     if not os.path.exists(b):
         return False, 'no reference %s' % os.path.basename(b)
     wa, ha, pa = read_png(a)
@@ -130,10 +96,9 @@ def replay(dump, png, vif1=False, gs_ini=None):
 
 
 def capture(mode, new, gs_ini=None):
-    """One game run in `mode`; its dumps and screenshots copied into `new` under the case names."""
     lag = LIVE_LAG if mode == 'pcsx2' else 0
     last = max(f for _, f, _ in CASES) + 4
-    card = os.path.join(new, 'memcard')  # an empty memory card: a save changes the Title flow (ror_mc.cpp)
+    card = os.path.join(new, 'memcard')
     shutil.rmtree(card, ignore_errors=True)
     subprocess.run([sys.executable, os.path.join(ROOT, 'tools', 'port', 'build.py'), 'run', '--frames', str(last),
                     '--seconds', '900', '--pad-script', PAD, '--env', 'ROR_GS=' + mode,

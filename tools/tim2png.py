@@ -1,26 +1,4 @@
-"""TIM2 textures (Sony PS2 standard format) -> PNG.
-
-Usage:
-  python tim2png.py <file.tm2> --dump                  print the picture headers
-  python tim2png.py <file.tm2> --png <out.png> [--clut N]
-      writes picture 0 (more pictures: <out>_1.png, ...); --clut picks a 16/256-colour palette when a CLUT holds several
-
-Layout (little-endian):
-  file header 0x10: 'TIM2', u8 version, u8 format (0: pictures 16-byte aligned, 1: 128-byte aligned; the first
-                    picture then starts at 0x80), u16 picture count, 8 reserved
-  picture header (header_size bytes, >= 0x30):
-    u32 total_size, u32 clut_size, u32 image_size, u16 header_size, u16 clut_colors, u8 pict_format,
-    u8 mipmaps, u8 clut_type, u8 image_type, u16 width, u16 height, u64 GsTEX0, u64 GsTEX1, u32 GsTEXA/FBA/PABE,
-    u32 GsTEXCLUT
-  then image data (image_size), then CLUT (clut_size).
-  image_type: 1 RGBA16 (A1B5G5R5), 2 RGB24, 3 RGBA32, 4 4-bit indexed (low nibble first), 5 8-bit indexed.
-  clut_type: low bits = colour type (1 RGBA16, 2 RGB24, 3 RGBA32); bit 7 clear = CSM1 layout: colour i of
-             palette n is CLUT entry csm1(n*N + i) (N = 16 or 256; csm1 swaps entries 8-15 and 16-23 of every 32).
-             On this disc every 4-bit CLUT is 32 entries = one 16-colour palette stored as a 16x2 CSM1 block.
-Alpha: PS2-style (0x80 = opaque), scaled to 0..255. By default the picture's own GsTEX0.TCC decides: TCC = 0 means
-the GS ignores texture alpha, so the PNG is written opaque (--alpha keep / opaque override). RGBA16: the STP bit.
-Only the top mipmap level is written.
-"""
+"""TIM2 textures (Sony PS2 standard format) -> PNG."""
 import argparse
 import struct
 import sys
@@ -38,7 +16,6 @@ def ps2_alpha(a):
 
 
 def colors(raw, ctype):
-    """Decode a run of colours of TIM2 colour type ctype into (r,g,b,a) tuples."""
     out = []
     if ctype == 1:
         for (c,) in struct.iter_unpack('<H', raw[:len(raw) // 2 * 2]):
@@ -74,7 +51,6 @@ class Picture:
         return (self.tex0 >> 34) & 1
 
     def rgba(self, clut_index=0, alpha='tex0'):
-        """Return rows of RGBA bytes for the top mip level. alpha: 'tex0' (follow GsTEX0.TCC), 'keep', 'opaque'."""
         rows = self._rgba(clut_index)
         if alpha == 'opaque' or (alpha == 'tex0' and self.tcc == 0):
             rows = [bytes(b if i % 4 != 3 else 255 for i, b in enumerate(r)) for r in rows]

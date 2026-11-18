@@ -1,11 +1,7 @@
 Subject: pcsx2-gsrunner: -direct, drive MTGS from a GS dump without VMManager::Initialize
 
-Rule of Rose port, renderer plan step 0 (notes/renderer.md 6.5): settings into EmuConfig (VMManager::ApplySettings),
-MTGS::WaitForOpen, then the dump's streams fed the way GSDumpReplayer feeds them, from the CPU thread, with no VM,
-BIOS, EE/IOP or SPU2. Against PCSX2 v2.8.2 (fd9d310).
-
 diff --git a/pcsx2-gsrunner/Main.cpp b/pcsx2-gsrunner/Main.cpp
-index de624db..0e31105 100644
+index de624db..dac1dda 100644
 --- a/pcsx2-gsrunner/Main.cpp
 +++ b/pcsx2-gsrunner/Main.cpp
 @@ -34,6 +34,8 @@
@@ -21,7 +17,7 @@ index de624db..0e31105 100644
  // Owned by the GS thread.
  static u32 s_dump_frame_number = 0;
  static u32 s_loop_number = s_loop_count;
-+static bool s_direct = false; // -direct: no VMManager::Initialize, the dump's streams go straight to MTGS
++static bool s_direct = false;
  static double s_last_internal_draws = 0;
  static double s_last_draws = 0;
  static double s_last_render_passes = 0;
@@ -37,13 +33,10 @@ index de624db..0e31105 100644
  			else if (CHECK_ARG_PARAM("-dump"))
  			{
  				std::string str(argv[++i]);
-@@ -972,6 +980,94 @@ static void CPUThreadMain(VMBootParameters* params, std::atomic<int>* ret)
+@@ -972,6 +980,91 @@ static void CPUThreadMain(VMBootParameters* params, std::atomic<int>* ret)
  	GSRunner::StopPlatformMessagePump();
  }
  
-+// -direct (Rule of Rose port, renderer plan step 0): drive the GS thread without a VM. Settings into EmuConfig, MTGS
-+// open, then the dump's streams the way GSDumpReplayer feeds them (GSDumpReplayer.cpp: LoadInitialState, SendPacketToMTGS,
-+// the VSync/ReadFIFO2/Registers cases), but from this thread: no VMManager::Initialize, no BIOS, no EE/IOP/SPU2.
 +static void CPUThreadMainDirect(const std::string filename, std::atomic<int>* ret)
 +{
 +	ret->store(EXIT_FAILURE);
@@ -88,7 +81,7 @@ index de624db..0e31105 100644
 +				case GSDumpTypes::GSType::Transfer:
 +				{
 +					if (packet.path == GSDumpTypes::GSTransferPath::Path1Old || packet.path == GSDumpTypes::GSTransferPath::Dummy)
-+						break; // our writer never emits these
++						break;
 +					const GIF_PATH path = static_cast<GIF_PATH>(static_cast<u8>(packet.path) - 1);
 +					const u32 length = static_cast<u32>(packet.length);
 +					Gif_Path& gifPath = gifUnit.gifPath[path];
@@ -132,7 +125,7 @@ index de624db..0e31105 100644
  int main(int argc, char* argv[])
  {
  	CrashHandler::Install();
-@@ -997,7 +1093,8 @@ int main(int argc, char* argv[])
+@@ -997,7 +1090,8 @@ int main(int argc, char* argv[])
  	GSRunner::SettingsOverride();
  
  	std::atomic<int> thread_ret;

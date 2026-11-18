@@ -1,0 +1,2 @@
+# Patches onto PS2Recomp must apply to its CRLF worktree byte-for-byte.
+tools/ps2recomp-patches/*.patch -text

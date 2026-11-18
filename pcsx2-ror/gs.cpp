@@ -1,7 +1,3 @@
-// The GS (renderer plan step 2, notes/renderer.md 6.4/6.5a): PCSX2's settings without a VM, MTGS on the runner's child
-// window (or none, for the replay tool), VSync with the EE's privileged registers, and a GS dump's other streams (state,
-// GIF transfers, GS->host reads) fed as GSDumpReplayer feeds them. The bring-up is pcsx2-gsrunner's InitializeConfig +
-// SettingsOverride and the -direct mode's (tools/pcsx2-patches/0001): no VMManager::Initialize, no BIOS, no EE/IOP/SPU2.
 #include "pcsx2/PrecompiledHeader.h"
 
 #include "ror_internal.h"
@@ -43,17 +39,15 @@ namespace
     MemorySettingsInterface s_settings;
     bool s_config_done = false;
     bool s_gs_open = false;
-    // config/gs.ini (ror_pcsx2_gs_config): {section, key, value}, applied over the defaults and the port's overrides.
     std::vector<std::array<std::string, 3>> s_user_settings;
 
-    std::mutex s_window_mutex; // s_window: written on the caller's thread, read on the GS thread (AcquireRenderWindow)
-    WindowInfo s_window;       // Surfaceless both before ror_pcsx2_gs_open and for a null window
+    std::mutex s_window_mutex;
+    WindowInfo s_window;
     bool s_window_set = false;
 
     std::atomic<unsigned long long> s_vsyncs{0};
     std::atomic<unsigned long long> s_presents{0};
 
-    // pcsx2-gsrunner's InitializeConfig, then its SettingsOverride minus what only a dump runner wants.
     bool initializeConfig()
     {
         if (s_config_done)
@@ -84,17 +78,13 @@ namespace
         fonts.push_back(fi);
         ImGuiManager::SetFonts(std::move(fonts));
 
-        // Everything in memory: no ini is read or written.
         Host::Internal::SetBaseSettingsLayer(&s_settings);
         VMManager::SetDefaultSettings(s_settings, true, true, true, true, true);
 
-        // Our 50 Hz VBlank clock is the master: no frame limiter, no host vsync (a 60 Hz display would pace it).
         s_settings.SetBoolValue("EmuCore/GS", "FrameLimitEnable", false);
         s_settings.SetIntValue("EmuCore/GS", "VsyncEnable", false);
         s_settings.SetIntValue("EmuCore/GS", "ScreenshotFormat", static_cast<int>(GSScreenshotFormat::PNG));
-        // Screenshots at the internal resolution (aspect corrected): the same size live and in the surfaceless replay.
         s_settings.SetIntValue("EmuCore/GS", "ScreenshotSize", static_cast<int>(GSScreenshotSize::InternalResolution));
-        // Input is the runner's (config/pad.ini), sound our own seam.
         s_settings.SetBoolValue("InputSources", "SDL", false);
         s_settings.SetBoolValue("InputSources", "XInput", false);
         s_settings.SetStringValue("SPU2/Output", "OutputModule", "nullout");
@@ -105,7 +95,6 @@ namespace
             s_settings.SetBoolValue("MemoryCards", fmt::format("Slot{}_Enable", i + 1).c_str(), false);
             s_settings.SetStringValue("MemoryCards", fmt::format("Slot{}_Filename", i + 1).c_str(), "");
         }
-        // No on-screen messages over the game.
         s_settings.SetBoolValue("EmuCore/GS", "OsdShowMessages", false);
         s_settings.SetBoolValue("Logging", "EnableSystemConsole", false);
 
@@ -117,8 +106,6 @@ namespace
         return true;
     }
 
-    // CSR.FINISH/SIGNAL and LBLID as we last wrote them: what VU1's output (MTVU, VU_Thread::Get_MTVUChanges) sets in
-    // PS2MEM_GS between two VSyncs is counted (renderer plan: a log line before any forwarding to the EE).
     u64 s_csr_written = 0, s_siglbl_written = 0;
     std::atomic<unsigned long long> s_finish{0}, s_signal{0}, s_label{0};
 
@@ -159,8 +146,6 @@ namespace
         return s;
     }
 
-    // gs.ini's [gs] keys -> PCSX2's (Pcsx2Config::GSOptions: "Renderer" = GSRendererType, "upscale_multiplier",
-    // "filter" = BiFiltering). False for an unknown key or value.
     bool mapGsKey(const std::string &key, const std::string &value, std::array<std::string, 3> &out)
     {
         const std::string k = lower(key), v = lower(value);
@@ -199,7 +184,7 @@ namespace
         }
         return false;
     }
-} // namespace
+}
 
 extern "C" int ror_pcsx2_gs_config(const char *path)
 {
@@ -293,7 +278,6 @@ extern "C" int ror_pcsx2_gs_open(void *window, int width, int height, unsigned f
     };
     if (!initializeConfig())
         return fail();
-    // VIF1: MTVU (VU1 on its own thread, as step 0b measured) and microVU1, as the gsrunner's -vif1.
     s_settings.SetBoolValue("EmuCore/Speedhacks", "vuThread", vif1);
     s_settings.SetBoolValue("EmuCore/CPU/Recompiler", "EnableVU1", true);
     VMManager::ApplySettings();
@@ -349,9 +333,6 @@ extern "C" int ror_pcsx2_gs_vsync(const void *regs, size_t size)
     return ROR_PCSX2_OK;
 }
 
-// The dump's state and transfers as GSDumpReplayer (and the gsrunner's -direct) feed them: registers, then
-// MTGS::Freeze(Load) (it waits for the GS thread and gives it PS2MEM_GS); each packet staged in its path's GIF buffer
-// and handed to MTGS as a completed packet.
 extern "C" int ror_pcsx2_gs_load_state(const void *state, size_t size, const void *regs, size_t regs_size)
 {
     if (!s_gs_open)
@@ -380,7 +361,7 @@ extern "C" int ror_pcsx2_gs_transfer(int path, const void *data, size_t size)
     if (path < 1 || path > 3 || !data || size == 0 || size % 16 || size > 0x40000000u)
         return ROR_PCSX2_E_ARG;
     if (path != 3 && ror_pcsx2::vif1IsOpen())
-        return ROR_PCSX2_E_STATE; // PATH1/PATH2 buffers belong to PCSX2's VU1 (MTVU) and VIF1 then
+        return ROR_PCSX2_E_STATE;
     const GIF_PATH index = static_cast<GIF_PATH>(path - 1);
     Gif_Path &gifPath = gifUnit.gifPath[index];
     gifPath.CopyGSPacketData(static_cast<u8 *>(const_cast<void *>(data)), static_cast<u32>(size));
@@ -403,7 +384,6 @@ extern "C" int ror_pcsx2_gs_save_state(void *buf, size_t size, size_t *needed)
         *needed = static_cast<size_t>(fd.size);
     if (!buf || size < static_cast<size_t>(fd.size))
         return ROR_PCSX2_E_BUFFER;
-    // As GSRenderer's own dump writer: render targets live on the GPU, local memory gets them first.
     MTGS::RunOnGSThread([]() {
         if (g_gs_renderer)
             g_gs_renderer->ReadbackTextureCache();
@@ -434,8 +414,6 @@ extern "C" int ror_pcsx2_gs_screenshot(const char *path)
         return ROR_PCSX2_E_STATE;
     if (!path || !*path)
         return ROR_PCSX2_E_ARG;
-    // Through the ring, not GSQueueSnapshot here: that sets the renderer's request from this thread, and whichever
-    // VSync the GS thread happens to be on takes it. In the ring it lands right before the next VSync we send.
     MTGS::RunOnGSThread([p = std::string(path)]() { GSQueueSnapshot(p, 0); });
     return ROR_PCSX2_OK;
 }

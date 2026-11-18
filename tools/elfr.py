@@ -1,30 +1,4 @@
-"""ELFR script modules (`.seq`, magic ELFR101) -> analysis dumps.
-
-The modules are MIPS code run by the VM in sequence/sequence.cpp (notes/script-vm.md). This tool decodes them the
-way the VM does and tracks values through each function, to answer: what does a module touch outside its own
-window, what does it pass to the natives, and which strings label its events.
-
-Address model (VM, notes/script-vm.md):
-  code   VM address = file offset + 0x8130 (jal uses imm16 << 2; file 0x30 = 0x8160 = linked 0x408160);
-         targets <= 0x815f are native calls, index (t - 0x144) >> 6
-  data   lui 0x41/0x45 -> base, lui 0x42/0x46 -> base + 0x10000 (handler 0x211d54); every other lui value is used raw
-         base = W + 0x450000 - hdr[0x10], W = buf + text + data + hdr[0xc] + 0x8000 (slot setup 0x215824)
-  stack  gp = W, sp = W + 0x780; the 0x780 bytes above W are saved/restored per context (0x2160bc / 0x215f40)
-
-Value tracking is intra-procedural and linear (registers reset at branch targets and after calls; -O0 stack slots
-keep the last value written in program order), with one interprocedural step for pointer arguments.
-
-Usage:
-  python elfr.py <module> --dump                    header, windows, functions, native calls
-  python elfr.py <files|dirs...> --survey           opcode use as the VM dispatches it
-  python elfr.py <files|dirs...> --mem              every load/store classified by what its base points at
-  python elfr.py <files|dirs...> --abs              non-relocated lui values: what they build, how they are used
-  python elfr.py <files|dirs...> --natives          (native, a0 sub-code) use, with nearby native-32 labels
-  python elfr.py <files|dirs...> --strings [OUT]    strings passed to native 32 with a0 = 10 (game text: default
-                                                    extracted/script-strings.tsv; regenerate with
-                                                    `python tools/elfr.py extracted/rtpk/DATA/SEQ_ENG --strings`)
-  python elfr.py <module> --ghidra OUT.tsv          annotations for tools/ghidra/ImportElfr.java
-"""
+"""ELFR script modules (`.seq`, magic ELFR101) -> analysis dumps."""
 import argparse
 import collections
 import glob
@@ -33,9 +7,9 @@ import struct
 import sys
 
 MAGIC = b'ELFR101\0'
-CODE_BASE = 0x8130          # VM code address of file offset 0
-LINK_BASE = 0x400000        # modules are linked with VM address 0 at 0x400000
-NATIVE_END = 0x8160         # VM addresses below this are native stubs
+CODE_BASE = 0x8130
+LINK_BASE = 0x400000
+NATIVE_END = 0x8160
 RELOC = {0x41: 0, 0x45: 0, 0x42: 0x10000, 0x46: 0x10000}
 STACK = 0x780
 END_MARK = {-0x20: 'shared buffer A (seq+0xdc1c)', -0x10: 'shared buffer B (seq+0xdc20)'}
@@ -56,7 +30,7 @@ LOADS = {'lw', 'lb', 'lbu', 'lh', 'lhu', 'lwl', 'lwr', 'lwc1'}
 STORES = {'sw', 'sb', 'sh', 'swl', 'swr', 'swc1'}
 BRANCH2 = {'beq', 'bne'}
 BRANCH1 = {'blez', 'bgtz', 'bltz', 'bgez', 'bc1t', 'bc1f'}
-ARGREGS = (4, 5, 6, 7, 8, 9)  # a0-a3, t0, t1: the six arguments the step function (0x216500) passes to a native
+ARGREGS = (4, 5, 6, 7, 8, 9)
 REGN = ('zero at v0 v1 a0 a1 a2 a3 t0 t1 t2 t3 t4 t5 t6 t7 s0 s1 s2 s3 s4 s5 s6 s7 t8 t9 k0 k1 gp sp fp ra').split()
 
 
@@ -65,7 +39,6 @@ def s16(x):
 
 
 def decode(w):
-    """-> (mnemonic, rs, rt, rd, imm16, word). Names follow the VM's tables (0x2ef5e8 / 0x2ef6e8 / 0x2ef798)."""
     op, rs, rt, rd = w >> 26, (w >> 21) & 31, (w >> 16) & 31, (w >> 11) & 31
     if w == 0:
         n = 'nop'
@@ -98,8 +71,8 @@ class Module:
         self.h0c = f[1] - (1 << 32) if f[1] & 0x80000000 else f[1]
         self.h10, self.text, self.data, self.bss, self.h20, self.h24 = f[2], f[3], f[4], f[5], f[6], f[7]
         self.data_end = self.text + self.data
-        self.w_off = self.data_end + self.h0c + 0x8000        # gp; stack = [W, W + 0x780)
-        self.base_off = self.w_off + 0x450000 - self.h10       # lui 0x41/0x45
+        self.w_off = self.data_end + self.h0c + 0x8000
+        self.base_off = self.w_off + 0x450000 - self.h10
         self.window = self.w_off + STACK
         self.words = struct.unpack_from('<%dI' % ((self.text - 0x30) // 4), data, 0x30)
 
@@ -123,7 +96,6 @@ class Module:
             return raw.decode('latin-1')
 
     def region(self, off):
-        """Name of the module-window region holding file offset `off`."""
         if off is None:
             return 'window'
         if off < 0:
@@ -141,7 +113,6 @@ class Module:
 
 
 def functions(m):
-    """Function starts (word indices): the entry, jal targets inside the module, and `addiu sp,sp,-N` prologues."""
     starts = {0}
     for i, w in enumerate(m.words):
         if w >> 16 == 0x27bd and w & 0x8000:
@@ -164,10 +135,6 @@ def branch_targets(m):
     return tg
 
 
-# Abstract values: ('k', value, lui_hi or None) constant | ('m', off) module window | ('sp', off) stack |
-# ('arg', i) incoming a0-a3 | ('ret', native, sub) native result | ('rets', func) script result |
-# ('ld', base_value, off) word loaded from memory | None unknown
-
 def add_const(v, c):
     if v is None:
         return None
@@ -188,17 +155,15 @@ def is_ptrish(v):
 
 
 class Analysis:
-    """Runs the value tracker over one module and records events."""
-
     def __init__(self, m):
         self.m = m
         self.funcs = functions(m)
         self.targets = branch_targets(m)
-        self.accesses = []    # (word index, 'load'|'store', base value, imm, mnemonic)
-        self.natives = []     # (word index, native, [arg values])
-        self.calls = []       # (word index, callee func word index, [arg values])
-        self.uses = []        # (word index, lui value tuple, use string)
-        self.addr_forms = []  # (word index, file offset) for addiu results that are module-window addresses
+        self.accesses = []
+        self.natives = []
+        self.calls = []
+        self.uses = []
+        self.addr_forms = []
         self.anomalies = collections.Counter()
         fstart = set(self.funcs)
         bounds = self.funcs + [len(m.words)]
@@ -226,7 +191,7 @@ class Analysis:
         regs_sp, regs_fp = [('sp', 0)], [None]
         reset(True)
         i = a
-        pending = None   # (kind, data) of a jal whose delay slot is being executed
+        pending = None
         while i < b:
             if i in self.targets and i != a and pending is None:
                 regs_sp[0], regs_fp[0] = regs.get(29), regs.get(30)
@@ -354,7 +319,6 @@ class Analysis:
 
 
 def resolve_arg(an, func_of, v, depth=0):
-    """Replace ('arg', k) by the set of values callers pass (one level of callers per depth step)."""
     if v is None or v[0] != 'arg' or depth > 4:
         return [v]
     f = func_of
@@ -371,7 +335,6 @@ def resolve_arg(an, func_of, v, depth=0):
 
 
 def describe_base(m, v):
-    """Classify a load/store base value -> (class, detail)."""
     if v is None:
         return 'unknown', ''
     t = v[0]
@@ -419,7 +382,6 @@ def iter_modules(paths):
 
 
 def short_name(path):
-    """extracted/rtpk/DATA/SEQ_ENG/W001/AREA.RPK/a164.ARA.d/0002 -> ENG/W001/a164"""
     parts = path.replace('\\', '/').split('/')
     lang = next((x[4:] for x in parts if x.startswith('SEQ_')), '?')
     tail = [x for x in parts[parts.index('SEQ_' + lang) + 1:] if x]
@@ -455,7 +417,6 @@ NATIVES_TSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'no
 
 
 def native_names(path=NATIVES_TSV):
-    """notes/script-natives.tsv -> {(native, sub or '*'): name}"""
     names = {}
     with open(path, encoding='utf-8') as f:
         next(f)
@@ -473,7 +434,7 @@ def native_label(names, nat, sub):
     if (nat, sub) in names:
         return '%s.%s' % (base, names[(nat, sub)])
     if sub > 0xffffff and all(32 < (sub >> s) & 0xff < 127 for s in (0, 8, 16, 24)):
-        return "%s.'%s'" % (base, sub.to_bytes(4, 'big').decode())   # multi-char constant, as written in C
+        return "%s.'%s'" % (base, sub.to_bytes(4, 'big').decode())
     return '%s.sub%d' % (base, sub)
 
 
@@ -482,10 +443,6 @@ def tsv_row(*fields):
 
 
 def write_ghidra(path, out):
-    """Annotation TSV for tools/ghidra/ImportElfr.java, in linked addresses. Code: file offset + 0x408130. Data, bss,
-    stack: file offset + lo, lo = 0x410000 - base, which is 0x408130 plus a gap of 0xd0 (0xb0 in G000) that the
-    ELFR packing removed. lui 0x45/0x46 address the same bytes 0x40000 higher (the VM gives 0x41 and 0x45 the
-    same base), so the importer adds that alias."""
     import re
     m = Module(open(path, 'rb').read(), path)
     an = Analysis(m)

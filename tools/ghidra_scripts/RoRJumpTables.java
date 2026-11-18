@@ -1,7 +1,3 @@
-// Installs jump-table overrides from data/jumptables.tsv (function, table address, entry count): disassembles every
-// target, puts an override on the function's computed `jr`, and grows the function body over the cases.
-//
-// Args: [tsv]  defaults to <this script's dir>/data/jumptables.tsv
 //@category RuleOfRose
 
 import java.io.*;

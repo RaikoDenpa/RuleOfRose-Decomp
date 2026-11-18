@@ -104,7 +104,7 @@ Full setup for a new machine is in [`SETUP.md`](SETUP.md). In short:
 and your own dump of the PAL disc (`SLES_542.18`).
 
 ```powershell
-git clone --recurse-submodules https://github.com/RaikoDenpa/RoR-Port.git
+git clone --recurse-submodules https://github.com/RaikoDenpa/RuleOfRose-Decomp.git
 # 1. Extract your disc dump into extracted/disc/  (python tools/iso9660.py)
 # 2. Rebuild the Ghidra project and names
 tools/ghidra_scripts/run_all.ps1 -Fresh

@@ -1,14 +1,4 @@
-"""VU microcode in SLES_542.18 (.vutext) -> program list and disassembly.
-
-The game uploads its VU code once at boot (notes/engine.md): a DMA ref of 0x354 qwords at 0x2932b0 on VIF1 (VU1) and
-0x9c qwords at 0x2969f0 on VIF0 (VU0). This tool walks that VIF stream the way the VIF would: MPG blocks place code
-in micro memory, UNPACK/STROW/STCOL/STMASK/DIRECT carry data, BASE/OFFSET/STCYCL/ITOP/MSCAL are recorded. Each MPG
-block is reported as a program with statistics that hint at its job, and can be disassembled.
-
-Usage:
-  python vudis.py <SLES_542.18> --dump                       programs of both streams
-  python vudis.py <SLES_542.18> --dis vu1|vu0 [--out FILE]   full disassembly (to extracted/, it is game code)
-"""
+"""VU microcode in SLES_542.18 (.vutext) -> program list and disassembly."""
 import argparse
 import collections
 import struct
@@ -151,7 +141,6 @@ def unpack_size(cmd, num, cl, wl):
 
 
 def walk(data):
-    """VIF stream -> list of events: ('MPG', vu_addr_bytes, [(lower, upper)]), ('UNPACK', ...), ('CODE', name, imm)."""
     out, p, cl, wl = [], 0, 1, 1
     while p + 4 <= len(data):
         code, = struct.unpack_from('<I', data, p)
@@ -187,7 +176,7 @@ def walk(data):
     return out
 
 
-JOB_HINTS = [  # (mnemonic prefix, label)
+JOB_HINTS = [
     ('xgkick', 'GS output'), ('clipw', 'clipping'), ('div', 'perspective divide'), ('ftoi4', 'screen coords'),
     ('itof', 'int->float input'), ('ersqrt', 'normalize (lighting)'), ('eleng', 'vector length'),
     ('esin', 'sin'), ('eexp', 'exp (fog?)'), ('ercpr', 'reciprocal'), ('eatan', 'atan'),

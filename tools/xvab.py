@@ -1,40 +1,25 @@
-"""XVAB sound-effect banks (DATA/SND/XV/NNMM.SE) -> dump / WAV.
-
-Layout and semantics: notes/formats/xvab.md. In short: 'XVAB', u8 1, u8 1, u16 0, u32 header size, then chunks
-{char tag[4], u32 payload size}: HEAD TGIF TGPG TGSP SEIF SEGP SERQ SESQ VELT PANT LFOT. The header goes to IOP
-memory, the PS-ADPCM body (at align16(header size), HEAD+4 bytes) to SPU RAM. Programs (TGIF -> TGPG) hold 36-byte
-splits (TGSP: key range, root note, ADSR, pitch, sample offset). SEs (SEIF group -> SEGP -> SERQ -> SESQ) are short
-bytecode sequences, in the data always a note-on (program, key, velocity), sometimes preceded by a note-off.
-
-Usage:
-  python xvab.py <bank.SE> --dump [--names G000_TBL.BIN]
-  python xvab.py <bank.SE> --wav <out_dir> [--names G000_TBL.BIN]   one WAV per SE, at the driver's pitch
-  python xvab.py <bank.SE> --samples <out_dir>                     each sample once, at its split's base rate
-"""
+"""XVAB sound-effect banks (DATA/SND/XV/NNMM.SE) -> dump / WAV."""
 import argparse
 import os
 import struct
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import psadpcm  # noqa: E402
+import psadpcm
 
-SPU_RATE = 48000  # SPU pitch 0x1000
+SPU_RATE = 48000
 
-# sceSdNote2Pitch (the disc's LIBSD.IRX, export 13 at 0x3bd0) multiplies two u16 tables at 0x54c0 / 0x54d8. Both equal
-# 0x8000 * 2^(n/12) and 0x8000 * 2^(f/1536) truncated (checked entry by entry), so they are generated here.
 SEMITONE = [int(0x8000 * 2 ** (n / 12)) for n in range(12)]
 FINE = [int(0x8000 * 2 ** (f / 1536)) for f in range(128)]
 
 
 def note2pitch(center_note, center_fine, note, fine=0):
-    """libsd sceSdNote2Pitch for non-negative fine values (the only case in the data)."""
     f = fine + center_fine
     if f < 0:
         return int(round(0x1000 * 2 ** ((note - center_note) / 12 + f / 1536))) & 0xffff
     q, f = f >> 7, f & 0x7f
     n = note + q - center_note
-    octave, step = int(n / 12), int(n - 12 * int(n / 12))  # C division / remainder
+    octave, step = int(n / 12), int(n - 12 * int(n / 12))
     shift = octave - 2
     if step < 0:
         step += 12
@@ -70,7 +55,6 @@ class Bank:
         return struct.unpack_from('<I', self.d, o)[0]
 
     def programs(self):
-        """[(tgpg bytes 0-1, [split dict...])] indexed by program number (TGIF order)."""
         tgif = self.head[2]
         out = []
         for i in range(self.u16(tgif)):
@@ -94,7 +78,6 @@ class Bank:
         }
 
     def ses(self):
-        """{(group, number): (serq bytes a, b, flags, [commands])}."""
         seif = self.head[3]
         out = {}
         for g in range(self.u16(seif)):
@@ -118,8 +101,6 @@ class Bank:
                 return v, p
 
     def sequence(self, p):
-        """Decode SESQ bytecode (interpreter 0x7260 in RXSNDDRV.IRX): op = byte & 0x3f, flag = byte >> 6, operands,
-        then a varint delta time. Returns [(name, flag, operands, delta)]."""
         cmds = []
         for _ in range(256):
             c = self.d[p]
@@ -160,7 +141,6 @@ class Bank:
         return cmds
 
     def sample(self, offset):
-        """Decode one sample from body + offset until a frame with the end flag; returns (samples, loop_frame)."""
         p = self.body + offset
         loop = None
         frames = bytearray()
@@ -184,15 +164,12 @@ def split_rate(sp, key):
 
 
 def table_names(path, slot):
-    """G000_TBL.BIN: 0x38-byte records {char name[0x1c], u32 id, u16 slot, u16 group, u16 number, u16 volume,
-    u16 pan, ...}; returns {(group, number): name} for one bank slot."""
     d = open(path, 'rb').read()
     out = {}
     for i in range(len(d) // 0x38):
         r = d[i * 0x38:(i + 1) * 0x38]
         sid, s, g, n = struct.unpack_from('<IHHH', r, 0x1c)
         if sid != 0xffffffff and s == slot:
-            # Shift-JIS: one name has a full-width letter ('wo_ｄoors_open'), kept as the developers wrote it
             out.setdefault((g, n), r[:0x1c].split(b'\0')[0].decode('cp932', 'replace'))
     return out
 

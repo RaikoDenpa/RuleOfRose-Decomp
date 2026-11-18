@@ -1,11 +1,4 @@
-"""Summarise a one-frame GS trace written by src/ror_gs.cpp (ROR_GS_TRACE=N -> run/gs_frame_N.tsv).
-
-Prints the privileged display registers, draw counts, and the distinct draw states (the registers the symptoms
-depend on) with how many draws use each and their screen boxes; --where filters draws (e.g. "tpsm=T4", "csa!=0",
-"abe=1"), --dump prints every row.
-
-  python tools/port/gs_trace.py [TRACE] [--where KEY=VALUE ...] [--dump]
-"""
+"""Summarise a one-frame GS trace written by src/ror_gs.cpp (ROR_GS_TRACE=N -> run/gs_frame_N.tsv)."""
 import argparse, collections, glob, os, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

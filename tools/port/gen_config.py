@@ -1,45 +1,18 @@
-"""Generate the PS2Recomp config for SLES_542.18 from our Ghidra project.
-
-Inputs
-  extracted/ps2recomp/ghidra/{functions,switches}.tsv   RoRExportRecomp.java (qualified names, jr sites + targets)
-  tools/ghidra_scripts/data/jumptables.tsv              our jump-table overrides (no Ghidra references)
-  tools/port/bindings.tsv                          the allowlist: every stub/syscall/override binding
-  disc/SLES_542.18                                      the ELF (table words, instruction patterns)
-  tools/PS2Recomp/ps2xRuntime/include/ps2_call_list.h  the runtime's handler names (PS2Recomp binds by name)
-Outputs (extracted/ps2recomp/)
-  functions.csv, config.toml, gen/ror_bindings.inc      (the .inc is the override list compiled into src/)
-
-Checks; any failure writes nothing and exits 1:
-  - each allowlist row names a function start, with the Ghidra name it was written against;
-  - no stub/syscall row (a runtime *library* handler) is a game function (GAME_RANGES), and its handler exists;
-  - no address is bound twice;
-  - no exported name can be matched by name to a runtime handler (exact, or one leading '_' added/removed, as
-    ps2_runtime_calls.h resolves them; a `handler@addr` stub also binds every function *named* handler):
-    colliding names get the suffix `_guest`, so the only bindings are the allowlisted addresses;
-  - every j/jal target lies in an exported function;
-  - every `jr reg` site gets a table PS2Recomp can key (address computed with its own lui/addu/lw match) whose
-    ELF entries include Ghidra's targets and stay inside the function (or its trailing gap), except the computed
-    jumps in DYNAMIC_JR.
-
-  python tools/port/gen_config.py [--dump]
-"""
+"""Generate the PS2Recomp config for SLES_542.18 from our Ghidra project."""
 import argparse, bisect, collections, os, re, struct, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 OUT = os.path.join(ROOT, 'extracted', 'ps2recomp')
 
-# Game code may only be bound to our own overrides, never to a runtime library handler (memory-map.md, sdk.md).
 GAME_RANGES = [(0x100000, 0x239f60, '.text game code, i3d/i3r and vector-math libraries'),
                (0x282dc8, 0x297eb8, '.gnu.linkonce.t (inline/template game functions)')]
 
-# Computed jumps that are not switch tables: runtime dispatch is correct for them.
 DYNAMIC_JR = {
     0x275128: 'libgcc longjmp-style unwind (restores sp/fp from a buffer, jr to the saved pc)',
     0x275aa8: 'libgcc EH return (jr a0 after the handler search, sp adjusted in the delay slot)',
     0x275c08: 'libgcc EH return (second copy)',
 }
 
-# Instruction patches, with the reason each one exists (port-strategy.md 2.1, run 1).
 PATCHES = [
     (0x2695c8, 0x03e00008, 'jr ra: SDK kernel patch called by _InitSys scans kernel memory 0x80000000-0x80080000 '
                            'for two code patterns and loops until their addresses agree; PS2Recomp has no kernel '
@@ -74,7 +47,6 @@ class Elf:
 
 
 def runtime_names(path):
-    """X(name) entries of PS2_SYSCALL_LIST and PS2_STUB_LIST."""
     text = open(path, encoding='utf-8').read()
     out = {}
     for macro in ('PS2_SYSCALL_LIST', 'PS2_STUB_LIST'):
@@ -86,7 +58,6 @@ def runtime_names(path):
 
 
 def resolves(name, names):
-    """ps2_runtime_calls::resolveNameWithOptionalLeadingUnderscoreAlias."""
     return name in names or (name.startswith('_') and name[1:] in names) or ('_' + name) in names
 
 
@@ -99,7 +70,6 @@ def in_game(a):
 
 
 def table_address(elf, start, jr):
-    """PS2Recomp ControlFlowAnalyzer: lw (20 back from jr) <- addu (10 back) <- lui + addiu/ori (20 back)."""
     ins = [elf.word(a) for a in range(start, jr + 4, 4)]
     j = len(ins) - 1
     rs = lambda w: (w >> 21) & 31
@@ -149,7 +119,6 @@ def main():
     funcs = [(int(a, 16), int(e, 16), int(n), q) for a, e, n, q in tsv(os.path.join(args.ghidra, 'functions.tsv'))]
     by_start = {f[0]: f for f in funcs}
 
-    # Names: C-safe, unique, never resolvable to a runtime handler.
     count = collections.Counter(c_name(q) for _, _, _, q in funcs)
     names, renamed = {}, []
     for a, _, _, q in funcs:
@@ -162,7 +131,6 @@ def main():
         names[a] = n
     assert not any(resolves(n, runtime) for n in names.values())
 
-    # Allowlist.
     binds = []
     seen = {}
     for row in tsv(args.bindings):
@@ -176,7 +144,7 @@ def main():
             errors.append('%s: no function starts there' % where)
         elif by_start[a][3] != gname:
             errors.append('%s: Ghidra now calls it %s' % (where, by_start[a][3]))
-        if kind != 'trace':  # a trace wraps whatever is bound there
+        if kind != 'trace':
             if a in seen:
                 errors.append('%s: bound twice (%s and %s)' % (where, seen[a], handler))
             seen[a] = handler
@@ -195,10 +163,6 @@ def main():
             errors.append('%s: unknown kind %s' % (where, kind))
         binds.append((a, kind, handler, gname, note))
 
-    # Jump tables. A table is read while its words stay inside the function or the gap up to the next function:
-    # Ghidra drops entries the index cannot reach (0x1280f8 switches on an even value; the odd entries are the
-    # default), and a few functions end before their last cases (0x21ac80, 0x21ace0, 0x21ad38): their CSV end is
-    # moved to the next function start so PS2Recomp decodes the cases.
     starts = sorted(by_start)
     next_start = {a: (starts[i + 1] if i + 1 < len(starts) else a) for i, a in enumerate(starts)}
     ends = {a: by_start[a][1] for a in starts}
@@ -237,8 +201,6 @@ def main():
             extended[fn] = (ends[fn], limit)
             ends[fn] = limit
         tables.append((addr, jr, fn, src, words))
-    # Every static call/jump target must lie in an exported function range: PS2Recomp has no code anywhere else, and
-    # the thread is parked at run time (0x1bf078, 0x21a348 were tail-jump targets Ghidra had merged elsewhere).
     order = sorted(ends)
     for a in order:
         for va in range(a, ends[a], 4):
@@ -270,7 +232,6 @@ def main():
             print('ERROR', e, file=sys.stderr)
         sys.exit(1)
 
-    # Write.
     os.makedirs(os.path.join(args.out, 'gen'), exist_ok=True)
     csv = os.path.join(args.out, 'functions.csv')
     with open(csv, 'w', encoding='utf-8', newline='\n') as f:

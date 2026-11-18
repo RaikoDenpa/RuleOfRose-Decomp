@@ -1,12 +1,3 @@
-// Applies hand-identified names from tools/ghidra_scripts/names/*.csv to SLES_542.18.
-//
-// CSV columns: address,namespace,name,kind,evidence
-//   namespace  "" for global, or Class / Lib::Sub (created as needed)
-//   kind       function (created if missing) | label
-//   evidence   free text (may contain commas); stored as a "RoR:" plate comment (functions) or EOL comment (labels)
-// Lines starting with # are ignored. Files are applied in name order, so later files win.
-//
-// Args: [namesDir]  defaults to <this script's dir>/names
 //@category RuleOfRose
 
 import java.io.*;

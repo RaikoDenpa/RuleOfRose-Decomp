@@ -1,7 +1,3 @@
-// Debug plumbing: script labels (native 32), the two AssertFail copies, printf and the RX printf, all to the host
-// log. Evidence: native_32_debug_print 0x20a5c0 (sub 10 = label string in a1, script-vm.md), AssertFail 0x21730c /
-// 0x216ed0 ("Assertion Failed: %s(%d)   %s\n", then spin), printf 0x262050, rx printf 0x243e80 (formats into a
-// 1 KB buffer, then printf or sceWrite to its tty fd).
 #include "ror.h"
 
 #include <cstdio>
@@ -12,9 +8,6 @@
 
 namespace
 {
-    // seq_cur_slot (0 global, 1 world, 2 area) and the module numbers GamMan keeps: world GamMan+0x21f50
-    // (GamMan::loadWorld 0x1c34ec stores its argument there), area GamMan+0x21f7c (GamMan::loadArea 0x1c5c08
-    // formats A%03d.ARA from it).
     constexpr uint32_t kSeqCurSlot = 0x7decd0;
     constexpr uint32_t kGamMan = 0x7ab1c0;
 
@@ -37,7 +30,6 @@ namespace
         }
     }
 
-    // Consecutive repeats of one label (a script waiting in a loop) are folded into a count.
     std::string g_last;
     unsigned g_repeats = 0;
 
@@ -79,7 +71,6 @@ void ror_AssertFail(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
                   getRegU32(ctx, 31));
     if (file.find("bedmemory") != std::string::npos)
     {
-        // The game heap (MagSystem heap 0x7135c0, set up by 0x100354/0x1003f8): descriptor, then its first block.
         auto dump = [&](const char *what, uint32_t a)
         {
             ror::log("  %s %08x: %08x %08x %08x %08x %08x %08x %08x %08x", what, a, ror::rd32(rdram, a), ror::rd32(rdram, a + 4),
@@ -109,9 +100,6 @@ void ror_rx_printf(uint8_t *rdram, R5900Context *ctx, PS2Runtime *)
 
 namespace ror
 {
-    // EE varargs: argument i < 8 is register r4+i (64 bits), the rest are 8-byte slots from the caller's sp. Floats
-    // arrive as doubles (soft-float, 64 bits in one register). The stack layout is UNVERIFIED (no >7-argument
-    // printf seen yet).
     std::string format(uint8_t *rdram, R5900Context *ctx, uint32_t fmtAddr, int first)
     {
         const std::string fmt = str(rdram, fmtAddr, 2048);
@@ -225,12 +213,6 @@ namespace ror
     }
 }
 
-// MagScene::request_menu 0x135928(scene, menu, a2), as the game has it (decompiled): MagScene state 3 (fade out, then
-// open_menu), the menu code at +0x2438, a2 at +0x2bfb4, the scene's two ids at +0x243c, then 0x13f270 (GamMan
-// 0x1c7130 with the menu code still in a1: unplayable, the menu's flags). Diagnostics, bound only with
-// ROR_MENU_SWAP=FROM:TO (hex; ror_main.cpp), otherwise the recompiled original runs: opens menu TO wherever the game
-// asks for FROM, e.g. 10000:10003 turns Start's item menu into the Save menu that a Bucket Knight's script opens
-// (native 18 -> request_menu).
 void ror_request_menu(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
 {
     static const std::pair<uint32_t, uint32_t> swap = []
@@ -253,8 +235,6 @@ void ror_request_menu(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     ror::wr32(rdram, scene + 0x2438, menu);
     const uint32_t ids = (ror::rd32(rdram, scene + 0x2404) & 0xffff) << 16 | (ror::rd32(rdram, scene + 0x85508) & 0xffff);
     ror::wr32(rdram, scene + 0x243c, ids);
-    // Continue at 0x13f270 as a tail jump (it returns to our caller's ra): GamMan's 0x1c7130 can switch tasks, which
-    // ror::call cannot follow.
     (void)runtime;
     SET_GPR_U32(ctx, 5, menu);
     ctx->pc = 0x13f270;

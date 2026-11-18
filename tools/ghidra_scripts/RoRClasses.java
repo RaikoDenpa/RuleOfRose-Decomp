@@ -1,16 +1,3 @@
-// Phase 2 step 1: recover the C++ class hierarchy of SLES_542.18 (g++ 2.9x, v2 ABI) and name it.
-//
-//  1. Every .gnu.linkonce.t.<mangled> block becomes a function named by demangling its section name;
-//     every .gnu.linkonce.d._vt$<class> block is labelled <Class>::vtable.
-//  2. libgcc RTTI helpers (__rtti_user / __rtti_si / __rtti_class) are found as the calls that linkonce
-//     __tf functions make with their mangled class-name string in a1. Every caller of those helpers is a
-//     type_info function; its a0/a1/a2/a3 give the __ti node, class name and base type_info(s).
-//  3. Vtables are found by scanning data for {0, __tf<class>} (entry 0 of a g++ v2 vtable); entries are
-//     8 bytes {int16 delta, int16 index, pfn}, ending with {0, 0}. Unnamed functions in a vtable slot are
-//     named <Owner>::vfunc_<slot>, where Owner is the most basic class in the chain using that pfn there.
-//
-// Args: <outDir>  TSV reports (classes.tsv, vtables.tsv, unresolved.tsv) are written there.
-// Re-runnable: names are set with USER_DEFINED source and existing user names are overwritten.
 //@category RuleOfRose
 
 import java.io.*;
@@ -58,7 +45,6 @@ public class RoRClasses extends GhidraScript {
         dopts.setDoDisassembly(true);
         dopts.setDemangleOnlyKnownPatterns(false);
 
-        // --- 1. linkonce sections ---
         int nt = 0, nd = 0, bad = 0;
         List<Address> linkonceTf = new ArrayList<>();
         for (MemoryBlock b : mem.getBlocks()) {
@@ -79,7 +65,6 @@ public class RoRClasses extends GhidraScript {
         }
         println("linkonce text=" + nt + " data=" + nd + " demangle failures=" + bad);
 
-        // --- 2. RTTI helpers and type_info functions ---
         Map<Address, Integer> helperVotes = new HashMap<>();
         for (Address tf : linkonceTf) {
             Function f = getFunctionAt(tf);
@@ -118,7 +103,6 @@ public class RoRClasses extends GhidraScript {
                 byTi.put(k.ti, k); byTf.put(k.tf, k); byName.put(k.name, k);
             }
         }
-        // classify helpers by argument shape, then resolve bases
         Map<Address, String> helperKind = new HashMap<>();
         for (Map.Entry<Address, List<Call>> e : helperCalls.entrySet()) {
             int withTiA2 = 0, withCount = 0;
@@ -160,7 +144,6 @@ public class RoRClasses extends GhidraScript {
                 }
             }
         }
-        // type_info function and node: Class::__tf / Class::__ti (the demangler's "type_info function" text is not a usable name)
         int outside = 0;
         for (Cls k : byTi.values()) {
             if (!blockName(k.tf).startsWith(LT)) { ensureFunction(k.tf); outside++; }
@@ -169,7 +152,6 @@ public class RoRClasses extends GhidraScript {
         }
         println("classes=" + byTi.size() + " (type_info functions outside linkonce: " + outside + ")");
 
-        // --- 3. vtables ---
         Map<Address, List<Slot>> vtables = new TreeMap<>();
         Map<Address, Cls> vtClass = new HashMap<>();
         for (MemoryBlock b : mem.getBlocks()) {
@@ -191,7 +173,7 @@ public class RoRClasses extends GhidraScript {
                     slots.add(s);
                 }
                 vtables.put(a, slots); vtClass.put(a, k); k.vtables.add(a);
-                a = e; // skip past this table
+                a = e;
             }
         }
         for (Map.Entry<Address, List<Slot>> e : vtables.entrySet()) {
@@ -199,8 +181,6 @@ public class RoRClasses extends GhidraScript {
             int idx = k.vtables.indexOf(e.getKey());
             setName(e.getKey(), ns(k.name), idx == 0 ? "vtable" : "vtable$" + idx);
         }
-        // slot owner = lowest common ancestor of every class whose primary vtable holds that pfn in that slot.
-        // (Several abstract bases have no emitted vtable, so walking base vtables alone would break the chain.)
         int vnamed = 0, shared = 0;
         Map<Address, Set<String>> pfnUsers = new HashMap<>();
         Map<Address, Set<Integer>> pfnSlots = new HashMap<>();
@@ -228,8 +208,6 @@ public class RoRClasses extends GhidraScript {
             Function f = getFunctionAt(o.getKey());
             if (f == null) { ensureFunction(o.getKey()); f = getFunctionAt(o.getKey()); }
             if (o.getValue().equals("SHARED")) { shared++; continue; }
-            // every non-linkonce vtable function restarts as vfunc_N; propagation then re-derives its name, so a
-            // re-run gives the same result as a fresh import (and drops names a changed rule no longer supports)
             if (f != null && !blockName(o.getKey()).startsWith(LT) && !csvNamed(o.getKey())) {
                 String[] p = o.getValue().split("#");
                 setName(o.getKey(), ns(p[0]), "vfunc_" + p[1]);
@@ -242,7 +220,6 @@ public class RoRClasses extends GhidraScript {
         if (outDir != null) writeReports(new File(outDir), vtables, vtClass, owners);
     }
 
-    // ---------- reports ----------
     void writeReports(File dir, Map<Address, List<Slot>> vtables, Map<Address, Cls> vtClass, Map<Address, String> owners) throws IOException {
         dir.mkdirs();
         try (PrintWriter w = new PrintWriter(new File(dir, "classes.tsv"), "UTF-8")) {
@@ -274,16 +251,6 @@ public class RoRClasses extends GhidraScript {
         println("reports written to " + dir + " (unresolved=" + unresolved.size() + ")");
     }
 
-    // Overrides share a method name. Slots (C,s) are joined into groups, and a group whose direct names agree names
-    // its other members; destructors become ~Owner. Joins:
-    //   1. (C,s) with (A,s), A = C's nearest ancestor that has an emitted vtable, when A's vtable has slot s.
-    //      Bases without a vtable (abstract, e.g. MagLife) are skipped: with single inheritance a base's vtable is a
-    //      prefix of every derived vtable, so slot s of A means the same in C however many bases lie between.
-    //   2. (C,s) with every (X,s) holding the same pfn (inherited implementation), except SHARED pfns (__pure_virtual).
-    //   3. abstractBaseSlots(): for a base B without a vtable, all descendants' (D,s) for slots s that provably
-    //      belong to B (see there).
-    // A group with no direct name can still be named by the Init/Exec/Term pattern of its neighbouring slots.
-    // "Direct" names are demangled linkonce names only, so a re-run computes exactly what a fresh import does.
     List<String> abstractReport = new ArrayList<>();
 
     void propagateOverrideNames(Map<Address, List<Slot>> vtables, Map<Address, Cls> vtClass, Map<Address, String> owners) throws Exception {
@@ -314,7 +281,7 @@ public class RoRClasses extends GhidraScript {
                     union.accept(key, anc + "#" + s.index);
                     if (!anc.equals(k.primaryBase)) skippedBaseLinks++;
                 }
-                if ("SHARED".equals(owners.get(s.pfn))) continue; // e.g. __pure_virtual: links unrelated classes
+                if ("SHARED".equals(owners.get(s.pfn))) continue;
                 String fk = firstKey.putIfAbsent(s.pfn, key);
                 if (fk != null && fk.endsWith("#" + s.index)) union.accept(key, fk);
             }
@@ -336,7 +303,6 @@ public class RoRClasses extends GhidraScript {
                 if (n != null) groupNames.computeIfAbsent(g, x -> new TreeSet<>()).add(n);
             }
         }
-        // Init/Exec/Term: name an unnamed group when every member class has the other two names in the adjacent slots
         Map<String, String> patternNames = new HashMap<>();
         for (String g : groupSlots.keySet()) {
             String n = initExecTerm(g, groupClasses.get(g), groupSlotIndex.get(g), find, groupNames);
@@ -361,7 +327,6 @@ public class RoRClasses extends GhidraScript {
             String n = names.iterator().next();
             for (Slot s : g.getValue()) {
                 Function f = getFunctionAt(s.pfn);
-                // linkonce functions keep their demangled names; names/*.csv names (RoRApplyNames) win over propagation
                 if (f == null || blockName(s.pfn).startsWith(LT) || csvNamed(s.pfn)) continue;
                 String own = owners.get(s.pfn);
                 if (own == null || own.equals("SHARED")) continue;
@@ -376,16 +341,10 @@ public class RoRClasses extends GhidraScript {
             + " links past vtable-less bases=" + skippedBaseLinks + " pattern-named groups=" + patternNames.size());
     }
 
-    // Slots of a base B without an emitted vtable. Its slot range starts after its nearest vtable'd ancestor's
-    // vtable (or at 1) and must be present in every descendant. Slot s provably belongs to B when, at s or any higher
-    // slot (contiguity: B's vtable is a prefix of its descendants'), either one implementation is shared by
-    // descendants in two or more of B's direct-child subtrees, or the same direct name appears in two or more of
-    // those subtrees. Weaker, reported separately: every descendant's vtable has the same length, across at least
-    // 3 subtrees. Owned slots join all descendants' (D,s) unless their direct names disagree.
     void abstractBaseSlots(Map<String, List<Slot>> prim, Map<Address, String> owners, java.util.function.BiConsumer<String, String> union) {
         for (Cls b : byName.values()) {
             if (prim.containsKey(b.name)) continue;
-            List<String[]> desc = new ArrayList<>(); // {class, child of b it descends through}
+            List<String[]> desc = new ArrayList<>();
             for (String c : prim.keySet()) {
                 List<String> ch = chain(c);
                 int i = ch.indexOf(b.name);
@@ -442,14 +401,11 @@ public class RoRClasses extends GhidraScript {
         }
     }
 
-    // Named by tools/ghidra_scripts/names/*.csv: RoRApplyNames leaves a "RoR:" plate comment on functions it names.
-    // (On a fresh import the CSV step runs after this script, so the end result is the same either way.)
     boolean csvNamed(Address a) {
         String c = getPlateComment(a);
         return c != null && c.startsWith("RoR:") && !c.startsWith("RoR: libkernl syscall") && !c.startsWith("RoR: self-named");
     }
 
-    // Method name carried by a demangled linkonce function ("~" for destructors); null for anything else
     String directName(Address pfn) {
         Function f = getFunctionAt(pfn);
         if (f == null || !blockName(pfn).startsWith(LT)) return null;
@@ -457,7 +413,6 @@ public class RoRClasses extends GhidraScript {
         return n.startsWith("~") ? "~" : n;
     }
 
-    // nearest proper ancestor of c that has an emitted (primary) vtable
     String vtAncestor(String c, Map<String, List<Slot>> prim) {
         List<String> ch = chain(c);
         for (int i = 1; i < ch.size(); i++) if (prim.containsKey(ch.get(i))) return ch.get(i);
@@ -466,8 +421,6 @@ public class RoRClasses extends GhidraScript {
 
     static final String[] IET = {"init", "exec", "term"};
 
-    // If, for every member class, the adjacent slots carry the other two of init/exec/term in order, return the
-    // missing one (case taken from the neighbours); otherwise null.
     String initExecTerm(String g, List<String> classes, int s, java.util.function.Function<String, String> find, Map<String, Set<String>> groupNames) {
         String result = null;
         for (String c : classes) {
@@ -500,7 +453,6 @@ public class RoRClasses extends GhidraScript {
         return l.equals("init") ? "Exec, Term (s+1, s+2)" : l.equals("exec") ? "Init, Term (s-1, s+1)" : "Init, Exec (s-2, s-1)";
     }
 
-    // ancestors of a class, itself first, following the (single) primary base chain
     List<String> chain(String c) {
         List<String> out = new ArrayList<>();
         for (Cls k = byName.get(c); k != null && out.size() < 64; k = k.primaryBase == null ? null : byName.get(k.primaryBase)) out.add(k.name);
@@ -516,8 +468,6 @@ public class RoRClasses extends GhidraScript {
         return common == null || common.isEmpty() ? null : common.get(0);
     }
 
-    // ---------- demangling / naming ----------
-    // g++ v2 class-name mangling: <len><id>, or Q<n>/Q_<n>_ followed by n such parts.
     static String className(String m) {
         int[] pos = {0};
         String r = parseName(m, pos);
@@ -549,7 +499,7 @@ public class RoRClasses extends GhidraScript {
             MangledContext ctx = demangler.createMangledContext(mangled, dopts, currentProgram, a);
             DemangledObject o = demangler.demangle(ctx);
             if (o != null && o.applyTo(currentProgram, a, dopts, monitor)) return true;
-        } catch (Exception e) { /* fall through to raw label */ }
+        } catch (Exception e) { }
         try { setName(a, null, mangled.replace(' ', '_')); } catch (Exception e) { return false; }
         return false;
     }
@@ -568,7 +518,6 @@ public class RoRClasses extends GhidraScript {
         SymbolTable st = currentProgram.getSymbolTable();
         Function f = getFunctionAt(a);
         Symbol keep = f != null ? f.getSymbol() : null;
-        // drop other symbols at this address that would collide with the new name (left over from earlier runs)
         for (Symbol s : st.getSymbols(a))
             if (s != keep && s.getName().equals(name) && s.getParentNamespace().equals(n)) s.delete();
         if (keep != null) {
@@ -585,7 +534,6 @@ public class RoRClasses extends GhidraScript {
         if (f == null) unresolved.add("create-function\t" + a);
     }
 
-    // ---------- tiny constant propagation over one function ----------
     List<Call> calls(Function f) {
         List<Call> out = new ArrayList<>();
         Map<String, Long> regs = new HashMap<>();
@@ -642,7 +590,6 @@ public class RoRClasses extends GhidraScript {
         return regs.get(r);
     }
 
-    // R5900 GPRs are 128-bit; Ghidra reports operands as sub-registers (a1_lo etc.), so use the base name.
     String regName(Instruction ins, int i) {
         if (i >= ins.getNumOperands()) return null;
         for (Object o : ins.getOpObjects(i)) {
@@ -655,7 +602,6 @@ public class RoRClasses extends GhidraScript {
         return null;
     }
 
-    // ---------- memory helpers ----------
     long u32(Address a) { try { return mem.getInt(a) & 0xffffffffL; } catch (Exception e) { return 0; } }
     boolean isExec(Address a) { MemoryBlock b = mem.getBlock(a); return b != null && b.isExecute(); }
     String blockName(Address a) { MemoryBlock b = mem.getBlock(a); return b == null ? "" : b.getName(); }

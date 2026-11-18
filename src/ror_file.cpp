@@ -1,7 +1,3 @@
-// File I/O seam: the RX file API (rxFile*, the stream variant sndman uses) and the five libkernl fileio calls, on
-// host files under the disc root (ROR_DISC, default the ELF's folder = extracted/disc). Everything completes
-// synchronously. Contracts: notes/port-strategy.md 3 "File I/O"; FileReq 0x1bf768-0x1bf994 opens with 0x8001,
-// polls rxFileSync(fd, 1) == 0, GetFileSize 0x1bfbd0 seeks (0, whence 2); fds are 1..63 (rxFileRead 0x245860).
 #include "ror.h"
 
 #include <algorithm>
@@ -24,18 +20,12 @@ namespace
         std::string path;
         uint32_t size = 0;
         uint32_t pos = 0;
-        uint32_t ring = 0;   // stream ring size (open-stream argument 3)
-        uint32_t paused = 0; // 0x245d88 flag
-        // Stream ring (rxFileOpenStream; the game's record at 0x804ab0 + fd * 0xd0: base +0x94, size +0x98, read
-        // offset +0xa4, bytes buffered +0xa8): file data in guest memory at ringBase, filled when the game asks how
-        // much is buffered (0x245ee0), consumed by 0x245f50. loopAt: the command list's "back to the start" point
-        // (0x245cd0 with {file size, 1}: sndman's looping music), 0 = none. Filled only with the sound seam on
-        // (ror_sound.cpp); with ROR_SOUND=0 nothing is buffered, as before.
+        uint32_t ring = 0;
+        uint32_t paused = 0;
         uint32_t ringBase = 0, readOff = 0, avail = 0, streamPos = 0, loopAt = 0;
-        bool write = false;  // a host0: file the game writes (sceOpen with SCE_WRONLY/SCE_RDWR)
+        bool write = false;
     };
 
-    // rx fds 1..63 (index = fd); libkernl fds 3..63 in their own table.
     File g_rx[64];
     File g_sce[64];
 
@@ -51,8 +41,6 @@ namespace
         return root;
     }
 
-    // Game paths are relative, lower-case, '/'-separated (data/evntex/EVNTEX.RPK); libkernl ones are
-    // cdrom0:\DATA\...;1. The disc is ISO 9660 (upper-case), so each component is matched case-insensitively.
     std::string normalize(std::string p)
     {
         for (const char *dev : {"cdrom0:", "cdrom:", "host0:", "host:"})
@@ -166,8 +154,6 @@ namespace
     }
 }
 
-// ---- rx file API ----
-
 void ror_rxFileOpen(uint8_t *rdram, R5900Context *ctx, PS2Runtime *)
 {
     const std::string path = ror::str(rdram, ror::arg(ctx, 0));
@@ -211,7 +197,6 @@ void ror_rxFileWrite(uint8_t *, R5900Context *ctx, PS2Runtime *)
     ror::ret(ctx, static_cast<uint32_t>(-1));
 }
 
-// rxFileSeek 0x245b68: 0 set, 1 relative, 2 = size - offset; anything else returns the position unchanged.
 void ror_rxFileSeek(uint8_t *, R5900Context *ctx, PS2Runtime *)
 {
     File *f = get(g_rx, ror::sarg(ctx, 0));
@@ -240,9 +225,6 @@ void ror_rxFileSeek(uint8_t *, R5900Context *ctx, PS2Runtime *)
 
 void ror_rxFileSync(uint8_t *, R5900Context *ctx, PS2Runtime *) { ror::ret(ctx, 0); }
 
-// Stream ring (sndman 0x180900): with no audio yet nothing is ever buffered, so the ring stays empty.
-// 0x245cd0 -> 0x246fa0(stream, commands, count, arg): 20-byte commands {u32 file position, u8 action, ...} kept
-// sorted; sndman 0x180900 gives one, {file size, 1}, for a looping stream: back to the start there.
 void ror_rxStreamCmd(uint8_t *rdram, R5900Context *ctx, PS2Runtime *)
 {
     File *f = get(g_rx, ror::sarg(ctx, 0));
@@ -255,7 +237,6 @@ void ror_rxStreamCmd(uint8_t *rdram, R5900Context *ctx, PS2Runtime *)
 
 namespace
 {
-    // Tops the ring up from the file (the RX file layer reads ahead asynchronously; here at once).
     void fillRing(uint8_t *rdram, File *f)
     {
         if (!f->ringBase || !f->ring || f->paused || !ror::soundOn())
@@ -346,13 +327,8 @@ void ror_rxFileSizeByPath(uint8_t *rdram, R5900Context *ctx, PS2Runtime *)
     ror::ret(ctx, size);
 }
 
-// ---- libkernl fileio (NowLoading::loadImage, debug screenshot, naga host files, reboot probe 0x2058ac) ----
-
 namespace
 {
-    // Writing (SCE_WRONLY 2 / SCE_RDWR 3, with SCE_CREAT 0x200 / SCE_TRUNC 0x400): only host: / host0: paths (the
-    // development host, e.g. MagSystem::screenshot 0x11860c's BMP), into host/ under the run folder. The disc stays
-    // read-only.
     int openWriteFile(const std::string &guestPath, uint32_t flags)
     {
         const bool host = _strnicmp(guestPath.c_str(), "host", 4) == 0;

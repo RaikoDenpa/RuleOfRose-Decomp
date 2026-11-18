@@ -1,15 +1,4 @@
-"""Disc data coverage: classify every byte of every disc file, descending into RTPK archives.
-
-Usage:
-  python coverage.py <extracted_disc_dir> --dump [--leaves <out.tsv>]
-
-Tiers:
-  parsed      structure decoded by our tools (RTPK headers/padding via rtpk.py, now-loading image via ldimg.py)
-  standard    a documented public format (MPEG-PS movies, TIM2, ELF/IRX, IOPRP romdir, PS2 icon, text)
-  identified  recognised by magic/name, but the game/middleware format is not reversed yet
-  unknown     no recognisable signature
---leaves writes one row per leaf (path, offset, size, format, tier). Output must go to an ignored folder.
-"""
+"""Disc data coverage: classify every byte of every disc file, descending into RTPK archives."""
 import argparse
 import collections
 import os
@@ -17,9 +6,8 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import rtpk  # noqa: E402
+import rtpk
 
-# magic prefix -> (format, tier)
 MAGIC = [
     (b'\x00\x00\x01\xba', 'PSS movie (MPEG-2 PS)', 'standard'),
     (b'TIM2', 'TIM2 texture', 'standard'),
@@ -56,7 +44,6 @@ def classify(head, path, size):
 
 
 def group_key(path):
-    """Group unknown leaves: drop the disc dir, replace digit runs with #."""
     p = path.replace('\\', '/')
     parts = p.split('/')
     top = '/'.join(parts[:3]) if len(parts) > 2 else p
@@ -80,7 +67,7 @@ def main():
     rows = []
 
     def leaf(buf, off, size, path):
-        if size == 0:  # empty archive slot: no bytes, and its "head" would be the next entry's data
+        if size == 0:
             fmt_n[('parsed', 'empty entries')] += 1
             fmts[('parsed', 'empty entries')] += 0
             return
@@ -106,7 +93,7 @@ def main():
             p = '%s/%s' % (path, e.name or '%04d' % e.index)
             if arc.is_nested(e):
                 child_total = walk(buf, base + e.offset, p)
-                slack = e.size - child_total  # a nested archive may be shorter than its slot
+                slack = e.size - child_total
                 tiers['parsed'] += slack
                 fmts[('parsed', 'RTPK header/padding')] += slack
             else:

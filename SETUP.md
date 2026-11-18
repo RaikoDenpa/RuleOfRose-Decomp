@@ -6,7 +6,7 @@ Windows. Everything below the repo root that comes from the disc or from builds 
 ## 1. Clone
 
 ```
-git clone --recurse-submodules https://github.com/RaikoDenpa/RoR-Port.git ruleofrosedecomp
+git clone --recurse-submodules https://github.com/RaikoDenpa/RuleOfRose-Decomp.git ruleofrosedecomp
 cd ruleofrosedecomp
 ```
 

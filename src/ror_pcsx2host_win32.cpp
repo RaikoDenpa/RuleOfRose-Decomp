@@ -1,7 +1,3 @@
-// ROR_GS and pcsx2-ror.dll (ror_pcsx2host.h). The DLL is delay-loaded (build.py: /DELAYLOAD), so the runner starts
-// without it under ROR_GS=cpu; with ROR_GS=pcsx2 it is loaded here first, so a missing DLL is a log line instead of
-// a delay-load exception at the first call. PCSX2 presents into a child window of the raylib window: created and
-// sized on the main thread, used by the GS and VIF1 calls on the game thread (MTGS's ring takes one producer thread).
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
@@ -19,12 +15,12 @@ namespace
 {
     constexpr wchar_t kChildClass[] = L"RorPcsx2Surface";
 
-    bool g_active = false;      // ROR_GS=pcsx2 and the DLL is open
+    bool g_active = false;
     HWND g_parent = nullptr;
     HWND g_child = nullptr;
-    std::atomic<int> g_width{0}; // the child's client size: written on the main thread, read on the game thread
+    std::atomic<int> g_width{0};
     std::atomic<int> g_height{0};
-    bool g_gsOpen = false;      // game thread only
+    bool g_gsOpen = false;
     int g_gsWidth = 0, g_gsHeight = 0;
 
     void logSink(void *, int level, const char *message)
@@ -36,7 +32,7 @@ namespace
     LRESULT CALLBACK childProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     {
         if (msg == WM_ERASEBKGND)
-            return 1; // the swap chain covers the whole client area
+            return 1;
         return DefWindowProcW(hwnd, msg, wp, lp);
     }
 
@@ -48,8 +44,6 @@ namespace
         h = r.bottom - r.top;
     }
 
-    // Game thread: PCSX2's GS with VIF1 + microVU1 on the child window, at the first call that needs it (the boot's
-    // VU1 microcode upload on DMA channel 1 can come before the first VBlank).
     bool ensureGs()
     {
         if (g_gsOpen)
@@ -102,8 +96,6 @@ namespace ror
                 "build.py build)", version, ROR_PCSX2_API_VERSION);
             std::exit(1);
         }
-        // PCSX2's GS settings (renderer, upscale, texture filtering): ROR_GS_INI, else gs.ini in the working folder
-        // (build.py run passes config/gs.ini). ROR_GS_INI=none or no file: PCSX2's defaults (gs_regress.py's 1x).
         const char *ini = std::getenv("ROR_GS_INI");
         const std::string iniPath = ini && *ini ? ini : "gs.ini";
         if (iniPath == "none")
@@ -134,12 +126,11 @@ namespace ror
         wc.cbSize = sizeof wc;
         wc.lpfnWndProc = childProc;
         wc.hInstance = GetModuleHandleW(nullptr);
-        wc.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512)); // IDC_ARROW (narrow without UNICODE)
+        wc.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));
         wc.lpszClassName = kChildClass;
         RegisterClassExW(&wc);
         int w = 0, h = 0;
         clientSize(w, h);
-        // Disabled: keyboard, mouse and gamepad focus stay with the raylib window (config/pad.ini).
         g_child = CreateWindowExW(0, kChildClass, L"", WS_CHILD | WS_VISIBLE | WS_DISABLED | WS_CLIPSIBLINGS, 0, 0,
                                   w, h, g_parent, nullptr, wc.hInstance, nullptr);
         if (!g_child)
@@ -159,7 +150,7 @@ namespace ror
         int w = 0, h = 0;
         clientSize(w, h);
         if (w <= 0 || h <= 0 || (w == g_width.load() && h == g_height.load()))
-            return; // minimised, or unchanged
+            return;
         MoveWindow(g_child, 0, 0, w, h, TRUE);
         g_width.store(w);
         g_height.store(h);

@@ -1,18 +1,4 @@
-"""Inspect a PCSX2 GS dump (src/ror_gsdump.cpp writes them; format of PCSX2 v2.8.2, GSDumpFile::ReadFile).
-
-  python tools/port/gs_dump.py DUMP.gs [--draws] [--regs]
-  python tools/port/gs_dump.py DUMP.gs --frames
-  python tools/port/gs_dump.py DUMP_vif1.gs --strip-vif1 OUT.gs    a plain PCSX2 GS dump without records 0x40/0x41
-
-DUMP may be compressed as PCSX2 writes it: .gs.xz (lzma) or .gs.zst (zstd through the zstd.dll of the PCSX2 build in
-extracted/pcsx2, so nothing needs installing).
-
-Prints the header, the frozen state's main registers, then per VSync: transfers per path and, parsing each path's GIF
-stream the way GSState::Transfer<index> does (tags continue across transfers), the primitives drawn (--draws: each
-with PRIM, vertex count and the register state at the kick) and the register writes (--regs).
---frames: per game frame instead (a frame starts at each PATH3 transfer: the sceGsPutDrawEnv packet of gs_swap_env
-0x25b908), with the PATH1 primitives whose kick vertex has a negative Z or lies off the 512 x 448 screen.
-"""
+"""Inspect a PCSX2 GS dump (src/ror_gsdump.cpp writes them; format of PCSX2 v2.8.2, GSDumpFile::ReadFile)."""
 import argparse, ctypes, glob, lzma, os, struct, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -32,7 +18,6 @@ PATHS = {1: 'PATH2', 2: 'PATH3', 3: 'PATH1', 0: 'PATH1old'}
 
 
 def zstd_decompress(data):
-    """A zstd stream (also frames without a content size) through zstd.dll's streaming API."""
     dlls = [p for d in ('tree-run', 'run', 'deps-v2.8.2/bin')
             for p in glob.glob(os.path.join(ROOT, 'extracted', 'pcsx2', d, 'zstd.dll'))]
     if not dlls:
@@ -66,7 +51,6 @@ def zstd_decompress(data):
 
 
 def load(path):
-    """The dump's bytes, decompressed for .xz / .zst."""
     d = open(path, 'rb').read()
     if path.endswith('.xz'):
         return lzma.decompress(d)
@@ -76,7 +60,6 @@ def load(path):
 
 
 def header(d):
-    """(serial, crc, version, state offset, state size, offset of the first packet)"""
     crc, ss = struct.unpack_from('<II', d, 0)
     h = struct.unpack_from('<9I', d, 8)
     serial = d[8 + h[2]:8 + h[2] + h[3]].decode('ascii', 'replace')
@@ -85,7 +68,7 @@ def header(d):
 
 class Gs:
     def __init__(self, state):
-        self.kick_hook = None  # kick_hook(gs, path, ctxt) at each primitive kick (gs_census.py)
+        self.kick_hook = None
         self.reg = {}
         self.prim = struct.unpack_from('<Q', state, 4)[0]
         names = [0x1a, 0x1c, 0x22, 0x3b, 0x3d, 0x44, 0x45, 0x46, 0x49, 0x50, 0x53, 0x51, 0x52, 0x52]
@@ -118,7 +101,7 @@ class Gs:
                 self.draws.append((path, PRIMS[t], ctxt, x - (off & 0xffff) / 16.0, y - ((off >> 32) & 0xffff) / 16.0,
                                    (v >> 32) & 0xffffffff, self.reg.get(0x4c + ctxt, 0), self.reg.get(0x4e + ctxt, 0),
                                    self.reg.get(0x47 + ctxt, 0), self.reg.get(0x06 + ctxt, 0), self.prim))
-        elif a in (0x16, 0x17):  # TEX2_1/2: PSM and the CLUT fields of TEX0_1/2, as GSState::GIFRegHandlerTEX2
+        elif a in (0x16, 0x17):
             mask = (0x3f << 20) | (0x7ffffff << 37)
             self.reg[a - 0x10] = (self.reg.get(a - 0x10, 0) & ~mask) | (v & mask)
             self.reg[a] = v
@@ -183,7 +166,6 @@ class Gs:
 
 
 def strip_vif1(path, out):
-    """Drops the VU1-state and VIF1-stream records (ROR_GSDUMP_VIF1): the rest is a dump stock PCSX2 replays."""
     d = load(path)
     crc, ss = struct.unpack_from('<II', d, 0)
     h = struct.unpack_from('<9I', d, 8)
@@ -246,7 +228,7 @@ def frames(path):
             p += 4
         elif t == 3:
             p += 8192
-        elif t in (0x40, 0x41):  # VU1 state / VIF1 stream (ROR_GSDUMP_VIF1)
+        elif t in (0x40, 0x41):
             p += 4 + struct.unpack_from('<I', d, p)[0]
     if started and gs.draws:
         close()
@@ -301,7 +283,7 @@ def main():
             p += 4
         elif t == 3:
             p += 8192
-        elif t in (0x40, 0x41):  # VU1 state / VIF1 stream (ROR_GSDUMP_VIF1)
+        elif t in (0x40, 0x41):
             p += 4 + struct.unpack_from('<I', d, p)[0]
         else:
             sys.exit('bad packet type %d at %d' % (t, p - 1))

@@ -1,23 +1,3 @@
-// ror-gsreplay: replays a GS dump through pcsx2-ror.dll's C API, the code path the runner's live GS uses (renderer plan
-// step 2, notes/renderer.md 6.5a: "one code path for replay and live"). A client of ror_pcsx2.h only, like the runner;
-// it replaces the patched pcsx2-gsrunner's -direct and -vif1 for the regression replays (tools/port/gs_regress.py).
-//
-//   ror-gsreplay DUMP.gs [--vif1] [--loops N] [--shot V:OUT.png]... [--window] [--gs-ini GS.INI]
-//
-// DUMP.gs: an uncompressed PCSX2 GS dump (ours from ROR_GSDUMP, src/ror_gsdump.cpp, or PCSX2's own .gs). Per loop: the
-// dump's state and registers (ror_pcsx2_gs_load_state), then its records: Transfer -> ror_pcsx2_gs_transfer, Registers
-// kept for the next VSync, VSync -> ror_pcsx2_gs_vsync, ReadFIFO2 -> ror_pcsx2_gs_read_fifo. Our VIF1 records (0x40
-// VU1 state, 0x41 VIF1 stream; ROR_GSDUMP_VIF1) are skipped: the dump's PATH1/PATH2 transfers stand for them.
-// --vif1 (a VIF1 dump, gsdump_F_vif1.gs): the live port's path instead, PCSX2's VIF1 + microVU1 (ROR_PCSX2_OPEN_VIF1):
-// 0x40 -> ror_pcsx2_vu1_set_state, 0x41 -> ror_pcsx2_vif1_transfer, PATH3 transfers as above, the dump's PATH1/PATH2
-// skipped (VIF1 and VU1 make them).
-// --shot V:OUT.png saves the frame VSync number V presents (1 = the dump's first VSync; counted on across loops;
-// "last" = the replay's last VSync). PCSX2's hardware renderers show nothing until the first buffer the dump draws is
-// displayed (a buffer that only exists in the loaded GS memory has no texture-cache target): our dumps' last VSync
-// always shows a frame drawn inside the dump.
-// No window by default (surfaceless); --window shows the replay at 50 Hz in a 640 x 448 window.
-// --gs-ini: PCSX2's GS settings as the runner's config/gs.ini (ror_pcsx2_gs_config); none: PCSX2's defaults.
-// Exit code 0 when the replay ran and every requested screenshot was written.
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
@@ -42,9 +22,9 @@ namespace fs = std::filesystem;
 
 namespace
 {
-    enum : uint8_t { kTransfer = 0, kVSync = 1, kReadFifo2 = 2, kRegisters = 3 }; // GSDumpTypes::GSType
-    enum : uint8_t { kVu1State = 0x40, kVif1Data = 0x41 };                         // ours (ROR_GSDUMP_VIF1)
-    enum : uint8_t { kPath2 = 1, kPath3 = 2, kPath1New = 3 };                       // GSDumpTypes::GSTransferPath
+    enum : uint8_t { kTransfer = 0, kVSync = 1, kReadFifo2 = 2, kRegisters = 3 };
+    enum : uint8_t { kVu1State = 0x40, kVif1Data = 0x41 };
+    enum : uint8_t { kPath2 = 1, kPath3 = 2, kPath1New = 3 };
     constexpr size_t kRegsSize = 8192;
 
     std::mutex g_logMutex;
@@ -68,9 +48,9 @@ namespace
     struct Record
     {
         uint8_t type;
-        uint8_t path; // Transfer: GSTransferPath
-        uint32_t size; // Transfer, Registers, VIF1 records: bytes; ReadFIFO2: quadwords
-        size_t data;   // offset in the file
+        uint8_t path;
+        uint32_t size;
+        size_t data;
     };
 
     struct Dump
@@ -140,8 +120,6 @@ namespace
         return true;
     }
 
-    // GSDumpFile::ReadFile's layout (pcsx2/GS/GSLzma.cpp): 0xFFFFFFFF, header size, GSDumpHeader (+ serial), state,
-    // 8 KB of privileged registers, then the records.
     bool readDump(const fs::path &path, Dump &d)
     {
         std::ifstream f(path, std::ios::binary);
@@ -165,7 +143,7 @@ namespace
             return false;
         }
         std::memcpy(header, d.file.data() + sizeof lead, sizeof header);
-        if (header[2] + header[3] <= lead[1]) // serial_offset, serial_size (relative to GSDumpHeader)
+        if (header[2] + header[3] <= lead[1])
             d.serial.assign(reinterpret_cast<const char *>(d.file.data() + sizeof lead + header[2]), header[3]);
         d.state = sizeof lead + lead[1];
         d.stateSize = header[1];
@@ -198,7 +176,7 @@ namespace
         wc.cbSize = sizeof wc;
         wc.lpfnWndProc = windowProc;
         wc.hInstance = GetModuleHandleW(nullptr);
-        wc.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512)); // IDC_ARROW
+        wc.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));
         wc.lpszClassName = L"RorGsReplay";
         RegisterClassExW(&wc);
         RECT r{0, 0, w, h};
@@ -269,7 +247,7 @@ int wmain(int argc, wchar_t **argv)
         return 2;
     }
     const uint64_t total = dump.vsyncs * static_cast<uint64_t>(loops);
-    std::map<uint64_t, std::pair<fs::path, std::string>> shots; // VSync -> path, its UTF-8 for the DLL
+    std::map<uint64_t, std::pair<fs::path, std::string>> shots;
     for (auto &[v, path] : shotArgs)
     {
         const uint64_t n = v == L"last" ? total : std::wcstoull(v.c_str(), nullptr, 10);
@@ -341,7 +319,7 @@ int wmain(int argc, wchar_t **argv)
                 const int gifPath = r.path == kPath1New ? 1 : r.path == kPath2 ? 2 : r.path == kPath3 ? 3 : 0;
                 if (!gifPath || (vif1 && gifPath != 3))
                 {
-                    skipped += r.size != 0; // VIF1 + VU1 make PATH1/PATH2; Path1Old and Dummy: not in our dumps
+                    skipped += r.size != 0;
                     break;
                 }
                 if (r.size == 0)
@@ -355,7 +333,7 @@ int wmain(int argc, wchar_t **argv)
                 transfers[gifPath]++;
                 break;
             }
-            case kVSync: // its field byte: CSR.FIELD in the registers says the same
+            case kVSync:
                 ++vsync;
                 if (auto s = shots.find(vsync); s != shots.end())
                     ror_pcsx2_gs_screenshot(s->second.second.c_str());
@@ -392,7 +370,7 @@ int wmain(int argc, wchar_t **argv)
                 }
                 vifRecords++;
                 break;
-            default: // kVif1Data
+            default:
                 if (vif1 && (rc = ror_pcsx2_vif1_transfer(file + r.data, r.size)) != ROR_PCSX2_OK)
                 {
                     std::printf("ERROR: ror_pcsx2_vif1_transfer(%u bytes): %d\n", r.size, rc);
@@ -410,7 +388,7 @@ int wmain(int argc, wchar_t **argv)
 
     ror_pcsx2_gs_counters c{};
     ror_pcsx2_gs_get_counters(&c, sizeof c);
-    ror_pcsx2_close(); // closes the GS: every queued screenshot is written by then
+    ror_pcsx2_close();
     if (window)
         DestroyWindow(window);
     std::printf("%s (serial %s): %llu vsyncs, %llu presented, %.0f ms", dumpPath.string().c_str(), dump.serial.c_str(),

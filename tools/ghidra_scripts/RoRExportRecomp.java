@@ -1,10 +1,3 @@
-// Exports what tools/ps2recomp/gen_config.py needs from the Ghidra project:
-//   functions.tsv  entry, end (exclusive), size, qualified name (Namespace::name), one row per function
-//   switches.tsv   jr address, function entry, comma-separated case targets Ghidra recovered (COMPUTED_JUMP
-//                  references) for every `jr reg` other than `jr ra`; empty targets = Ghidra has none (our
-//                  data/jumptables.tsv overrides carry no references, the generator takes those from the TSV)
-//
-// Args: <out dir>   (both files are overwritten)
 //@category RuleOfRose
 
 import java.io.*;

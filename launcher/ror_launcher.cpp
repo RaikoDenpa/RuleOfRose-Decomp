@@ -1,21 +1,3 @@
-// Rule of Rose PC port: the playtest package's launcher (RuleOfRose.exe, built and packaged by build.py dist).
-//
-// A settings window (Win32 common controls, no other libraries). The package holds no game files: on the first Play
-// the launcher asks for the player's own disc image (ISO 9660, 2048-byte sectors), checks that it is the release this
-// build was recompiled from (SHA-256 of its SLES_542.18, the PAL disc SLES-54218), and extracts it into game\ next to
-// the launcher, with a progress bar. It then runs bin\ps2EntryRunner.exe on game\SLES_542.18 (the runner's disc root
-// is the ELF's folder, src/ror_file.cpp) in user\, with the memory card user\memcard (src/ror_mc.cpp) and one log
-// folder per session, user\logs\<date-time>\ (ror.log, stdout.txt, stderr.txt), hiding itself until the game exits.
-//
-// Settings are files next to the launcher, which it reads at start and writes before each Play:
-//   port.ini   skip_intro, fullscreen, window_width, window_height, volume (src/ror_options.cpp, src/ror_window.cpp);
-//              movies (0: the launcher sets ROR_MOVIES=0, src/ror_movie.cpp)
-//   gs.ini     [gs] renderer, upscale, texture_filtering (pcsx2-ror/gs.cpp); [EmuCore/GS] AspectRatio (PCSX2's)
-//   pad.ini    the controls (src/ror_pad.cpp), opened in Notepad by "Controls..."
-//
-//   RuleOfRose.exe [--iso PATH] [--reset] [--play]   --iso: the image for the next extraction; --reset: extract again;
-//                                                     --play: start the game at once, no window (tests)
-// ROR_* variables already set in the environment are passed through unchanged (tests set ROR_MAX_FRAMES etc.).
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
@@ -45,8 +27,6 @@ namespace fs = std::filesystem;
 
 namespace
 {
-    // SHA-256 of SLES_542.18 on the PAL disc (SLES-54218) the port is recompiled from. A different release has
-    // different code at different addresses, which the recompiled program cannot run.
     constexpr char kElfSha256[] = "71417965b8931cadcebc33f48439df3290822316e4c139d9c4c7a4b6d7fb7692";
     constexpr char kElfName[] = "SLES_542.18";
     constexpr uint32_t kSector = 2048;
@@ -54,11 +34,9 @@ namespace
 
     fs::path g_root, g_game, g_user, g_runner;
 
-    // ---------------------------------------------------------------- disc image ----------------------------------
-
     struct Entry
     {
-        std::string path;   // '/'-separated, as on the disc (upper case), without the ";1" version
+        std::string path;
         uint32_t lba = 0, size = 0;
     };
 
@@ -101,8 +79,6 @@ namespace
 
     uint32_t le32(const uint8_t *p) { return p[0] | p[1] << 8 | p[2] << 16 | static_cast<uint32_t>(p[3]) << 24; }
 
-    // ISO 9660 directory records: length at +0, extent LBA +2, data length +10, flags +25 (2 = directory), name
-    // length +32, name +33; "." and ".." are the names 00 and 01. Records do not cross sector boundaries.
     bool walk(FILE *f, uint32_t lba, uint32_t size, const std::string &prefix, std::vector<Entry> &out, int depth)
     {
         if (depth > 16)
@@ -145,7 +121,6 @@ namespace
         return true;
     }
 
-    // The disc image -> dst (a fresh folder). Empty on success, else what went wrong. progress(0..1000).
     template <typename Progress>
     std::wstring extractIso(const fs::path &iso, const fs::path &dst, Progress progress)
     {
@@ -215,7 +190,6 @@ namespace
         return readFile(g_game / kElfName, elf) && sha256(elf) == kElfSha256;
     }
 
-    // Extracts into game.partial, then renames it to game. Empty on success.
     template <typename Progress>
     std::wstring installFrom(const fs::path &iso, Progress progress)
     {
@@ -235,13 +209,11 @@ namespace
         return {};
     }
 
-    // ---------------------------------------------------------------- settings ------------------------------------
-
     struct Settings
     {
         bool fullscreen = false;
         int width = 1280, height = 896;
-        std::string aspect = "4:3";             // PCSX2's AspectRatio name
+        std::string aspect = "4:3";
         std::string renderer = "auto", filtering = "ps2";
         int upscale = 2;
         bool skipIntro = true, movies = true;
@@ -325,8 +297,6 @@ namespace
            << "AspectRatio = " << s.aspect << "\n";
     }
 
-    // ---------------------------------------------------------------- running the game ----------------------------
-
     void setDefault(const wchar_t *name, const std::wstring &value)
     {
         wchar_t cur[8];
@@ -334,7 +304,6 @@ namespace
             SetEnvironmentVariableW(name, value.c_str());
     }
 
-    // Starts the game; returns its process handle (or null) and the session's log folder.
     HANDLE startGame(const Settings &s, fs::path &logs, std::wstring &err)
     {
         wchar_t stamp[32];
@@ -346,7 +315,6 @@ namespace
         std::error_code ec;
         fs::create_directories(logs, ec);
         fs::create_directories(g_user / L"memcard", ec);
-        // Windows paths: PCSX2's file layer does not open gs.ini by a '/'-separated path.
         setDefault(L"ROR_PAD_CONFIG", (g_root / L"pad.ini").wstring());
         setDefault(L"ROR_GS_INI", (g_root / L"gs.ini").wstring());
         setDefault(L"ROR_PORT_INI", (g_root / L"port.ini").wstring());
@@ -379,8 +347,6 @@ namespace
         CloseHandle(pi.hThread);
         return pi.hProcess;
     }
-
-    // ---------------------------------------------------------------- the window ----------------------------------
 
     enum : int
     {
@@ -507,7 +473,6 @@ namespace
         return GetOpenFileNameW(&ofn) ? std::wstring(file) : std::wstring();
     }
 
-    // Extraction on a worker thread; WmExtracted carries a heap-allocated error text (null = fine) and whether to play.
     void beginInstall(const std::wstring &iso, bool thenPlay)
     {
         setBusy(true);
@@ -728,7 +693,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int show)
         else if (a == L"--play")
             playNow = true;
         else if (a.size() > 4 && _wcsicmp(a.c_str() + a.size() - 4, L".iso") == 0)
-            g_isoArg = a;   // an image dropped on the launcher
+            g_isoArg = a;
     }
     if (!fs::exists(g_runner))
     {
@@ -740,10 +705,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int show)
     if (reset)
     {
         std::error_code ec;
-        fs::remove(g_game / kElfName, ec);   // gameReady() fails, so the next Play extracts again
+        fs::remove(g_game / kElfName, ec);
     }
 
-    // Tests: --play extracts if needed (with --iso) and runs the game without the window, returning its exit code.
     if (playNow)
     {
         if (!gameReady())

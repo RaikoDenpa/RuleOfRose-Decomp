@@ -1,15 +1,4 @@
-"""Decode a VIF1 stream dumped by ROR_VIF1_DUMP (src/ror_vif1dump.cpp): what VU1 receives per MSCAL.
-
-  python tools/port/vif1_chain.py vif1_F.bin                    summary: VIFcodes, MSCALs, programs
-  python tools/port/vif1_chain.py vif1_F.bin --scan [--huge X]  NaN / Inf / |x| > X (default 1e8) in 32-bit float UNPACKs
-  python tools/port/vif1_chain.py vif1_F.bin --list A-B         MSCALs A..B: VIF state and every unpacked vector
-  python tools/port/vif1_chain.py vif1_F.bin --at 0x3f4,0x3f5   VU1 data words at those addresses at each MSCAL (when changed)
-
-VU1 data memory is simulated (1024 quadwords, from zero: the boot upload of constants is not in a frame's chain, so
---at shows only what this frame writes). UNPACK honours STCYCL (skipping and filling writes), STMASK/STROW/STCOL,
-STMOD (offset/difference), USN and the FLG (+TOPS) bit; MSCAL/MSCNT latch TOP = TOPS and ITOP = ITOPS, then swap the
-double buffer (TOPS = BASE or BASE + OFFSET, DBF toggled), as PS2Memory::processVIF1Data does.
-"""
+"""Decode a VIF1 stream dumped by ROR_VIF1_DUMP (src/ror_vif1dump.cpp): what VU1 receives per MSCAL."""
 import argparse, math, struct, sys
 
 NAMES = {0x00: 'NOP', 0x01: 'STCYCL', 0x02: 'OFFSET', 0x03: 'BASE', 0x04: 'ITOP', 0x05: 'STMOD', 0x06: 'MSKPATH3',
@@ -33,8 +22,8 @@ class Vif:
         self.mask = 0
         self.row = [0, 0, 0, 0]
         self.col = [0, 0, 0, 0]
-        self.calls = []      # per MSCAL: dict
-        self.unpacks = []    # since the last MSCAL: (vu addr, fmt, [vectors as u32 lists], float?)
+        self.calls = []
+        self.unpacks = []
         self.counts = {}
 
     def unpack(self, cmd, data, pos):
@@ -42,8 +31,6 @@ class Vif:
         vn, vl, masked = (op >> 2) & 3, op & 3, (op >> 4) & 1
         comps = vn + 1
         bits = 16 if (vl == 3 and vn == 3) else comps * (32 >> vl)
-        # PCSX2 vifUnpackSetup (Vif_Unpack.cpp): WL 0 means 256; CL is taken as is, so CL < WL is a filling write
-        # that reads CL * (NUM / WL) + min(NUM % WL, CL) vectors (CL 0: none, every value from the mask).
         cl, wl = self.cl, self.wl or 256
         if wl <= cl:
             nsrc = num

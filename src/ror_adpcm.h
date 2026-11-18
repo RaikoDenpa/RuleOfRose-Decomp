@@ -1,6 +1,3 @@
-// PS-ADPCM (tools/psadpcm.py): 16-byte frames, byte 0 = filter << 4 | shift, byte 1 = flags (bit 0 end, bit 1 repeat,
-// bit 2 loop start), 14 bytes = 28 4-bit samples, low nibble first. The movies' audio (ror_movie.cpp), the STR streams
-// and the XVAB banks' samples (ror_sound.cpp) all use it.
 #pragma once
 
 #include <algorithm>
@@ -11,7 +8,6 @@ namespace ror
     struct Adpcm
     {
         int h1 = 0, h2 = 0;
-        // One frame -> 28 samples at out[0], out[step], ...
         void frame(const uint8_t *f, int16_t *out, int step)
         {
             static const int kCoef[5][2] = {{0, 0}, {60, 0}, {115, -52}, {98, -55}, {122, -60}};

@@ -1,8 +1,3 @@
-// Sampling profiler: a host thread suspends the game thread about 1,000 times a second, unwinds its stack with the
-// x64 unwind data (RtlLookupFunctionEntry / RtlVirtualUnwind, no PDB needed) and stores the return addresses in a
-// buffer allocated up front, so nothing allocates while the game thread is stopped (it may hold the heap lock).
-// The file lists each sample's frames as offsets into the exe ("e<rva>") or as the name of another module;
-// tools/port/profile.py maps them to functions and object files with the linker map.
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
@@ -30,7 +25,6 @@ namespace
         DWORD64 pc[kMaxFrames];
     };
 
-    // Reading the suspended thread's stack can fault on a corrupt frame; SEH needs a function without C++ objects.
     bool readStack(DWORD64 address, DWORD64 &value)
     {
         __try
@@ -58,7 +52,7 @@ namespace
                 DWORD64 establisher = 0;
                 RtlVirtualUnwind(UNW_FLAG_NHANDLER, imageBase, c.Rip, fn, &c, &handlerData, &establisher, nullptr);
             }
-            else if (!readStack(c.Rsp, c.Rip)) // leaf function: the return address is at [rsp]
+            else if (!readStack(c.Rsp, c.Rip))
             {
                 break;
             }

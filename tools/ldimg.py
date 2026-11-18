@@ -1,15 +1,4 @@
-"""Now-loading image (CMNTEX/LOADING.BIN; the EU build asks for CMNTEX/LOAD_EU.BIN, absent from the disc).
-
-Usage:
-  python ldimg.py <file> --dump              print layout facts
-  python ldimg.py <file> --png <out.png>     write the image as PNG
-
-Layout (system/sysNowLoading.cpp, 0x2064e4/0x206644):
-  0x00000  256*256 u8 pixel indices, row-major      -> GS texture PSMT8, TBW 4 (256 px), TW=TH=8
-  0x10000  256 * u32 RGBA CLUT, CSM1 order          -> uploaded as a 16x16 PSMCT32 image to CBP 0x1f40
-  0x10400  padding (LOADING.BIN: 0xE0 zero bytes)
-Alpha is PS2-style (0x80 = opaque) and is scaled to 0..255.
-"""
+"""Now-loading image (CMNTEX/LOADING.BIN; the EU build asks for CMNTEX/LOAD_EU.BIN, absent from the disc)."""
 import argparse
 import struct
 import sys
@@ -20,7 +9,6 @@ CLUT_OFF = W * H
 
 
 def csm1(i):
-    """CSM1 CLUT index order: within every 32 entries, entries 8-15 and 16-23 are swapped."""
     return (i & 0xE7) | ((i & 0x08) << 1) | ((i & 0x10) >> 1)
 
 

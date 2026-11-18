@@ -1,16 +1,9 @@
-"""PS-ADPCM ("VAG") decoding and WAV writing, shared by str2wav.py and xvab.py.
-
-A frame is 16 bytes: byte 0 = filter << 4 | shift, byte 1 = flags (bit 0 loop end, bit 1 loop repeat, bit 2 loop
-start), then 14 bytes = 28 signed 4-bit samples, low nibble first. Same coding as the SPU2 voices and PSS audio.
-"""
 import struct
 
 COEF = ((0, 0), (60, 0), (115, -52), (98, -55), (122, -60))
 
 
 def decode(data, state=None, stop_at_end_flag=False):
-    """Decode a byte string of whole frames to a list of int16 samples. state = [h1, h2] carried between calls.
-    With stop_at_end_flag, stop after the first frame whose flags have bit 0 (loop end) set."""
     h1, h2 = state if state else (0, 0)
     out = []
     append = out.append
@@ -35,7 +28,6 @@ def decode(data, state=None, stop_at_end_flag=False):
 
 
 def write_wav(path, rate, channels):
-    """channels: list of equal-length int16 sample lists (1 = mono, 2 = stereo)."""
     n = min(len(c) for c in channels)
     nch = len(channels)
     if nch == 1:

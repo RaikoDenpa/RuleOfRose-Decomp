@@ -1,31 +1,3 @@
-// Sound seam (notes/roadmap.md seam 2): the RX sound driver's EE client (rxsnd, 0x239f60-0x2442xx; notes/sdk.md), whose
-// calls went over SIF RPC to the IOP driver RXSNDDRV.IRX, is replaced by a host driver. The game keeps its own sound
-// layers (GamSndMan 0x7c3fc0, sndman 0x7dc480: tables, 3D volumes, stream file reading through ror_file.cpp's ring);
-// these overrides are the calls they make:
-//
-//   banks   0x23c0e0 rxSndXvabOpen(id or -1, EE address of the XVAB file, ...) -> id   0x23c648 loaded   0x23c4d0 close
-//   SEs     0x23dd90 rxSndSePlay(bank, group, number, vol L, vol R, flag) -> handle 0..0x3f   0x23e150 status: 1
-//           sounding, 5 finished (sndman's tick 0x181614 then stops it, or plays a looping entry again), 8 paused;
-//           0 once stopped   0x23e020 stop   0x23e188 pause (handle, on, -)   0x23e2e8 volume (L, R)   0x23e438 pitch
-//           (f12 = ratio, a0 = handle)
-//   streams 0x23fc30 / 0x23fbf0 rxSndAdpcmOpen(mode 0 mono / 1, 2 stereo, rate, ...) -> handle 0..0x2f
-//           0x240080 status (1 in use, 4 finished: sndman 0x180900 then closes it, 8 paused)   0x240168 free space in
-//           bytes   0x240a38 / 0x240180 data (handle, EE address, -, bytes)   0x240a50 end of data   0x23ff48 close
-//           0x240e20 pause   0x240f60 volume (L, R)   0x241238 pitch (f12, a0)
-//   volumes 0x23a0b0 master   0x23dc98 SEs   0x23faf8 streams: each -128..128 (0x80 = unity); a voice's level is
-//           master x category x its own >> 14 (0x23e2e8, 0x240f60)
-//
-// Formats: XVAB banks (notes/formats/xvab.md: programs, splits, SE bytecode, the libsd pitch tables, the volume
-// formula of the IRX's 0x93c0), STR streams (notes/formats/str.md: headerless PS-ADPCM at 48 kHz, stereo interleaved
-// every 16-byte frame). Mixing is in software at 48 kHz, kVblankFrames per VBlank of the game's clock (soundVblank,
-// from ror_vsync.cpp), so what the game reads back (a stream finished, an SE still sounding) follows the game's time,
-// not the audio device's; a small ring hands the mix to the device (raylib audio stream, float stereo).
-//
-// Diagnostics: ROR_SOUND_WAV=FILE writes the mix (the game's clock, 48 kHz stereo 16-bit); ROR_SOUND_LOG=1 logs every
-// SE play (banks and streams are always logged as they open and close).
-//
-// ROR_SOUND=0 restores the placeholders' answers (every stream finished at once, no SE sounding, no data taken): the
-// recorded routes and the regression run that way (their frames assume it, as with ROR_MOVIES=0).
 #include "ror.h"
 #include "ror_adpcm.h"
 
@@ -45,10 +17,10 @@
 namespace
 {
     constexpr int kRate = 48000;
-    constexpr int kVblankFrames = kRate / 50;   // the VBlank clock is 50 Hz (PAL; ror_vsync.cpp)
+    constexpr int kVblankFrames = kRate / 50;
     constexpr int kHandles = 0x40, kStreams = 0x30, kVoices = 96, kBanks = 0x100;
-    constexpr int kReleaseFrames = 480;         // 10 ms fade when a voice is stopped
-    constexpr size_t kStreamQueue = kRate / 2;  // decoded frames a stream holds ahead (its free space follows)
+    constexpr int kReleaseFrames = 480;
+    constexpr size_t kStreamQueue = kRate / 2;
 
     bool enabled()
     {
@@ -62,14 +34,12 @@ namespace
 
     int clampVol(int32_t v) { return v < -0x80 ? -0x80 : v > 0x80 ? 0x80 : v; }
 
-    // ---- volumes ----
     int g_master[2] = {0x80, 0x80}, g_seVol[2] = {0x80, 0x80}, g_streamVol[2] = {0x80, 0x80};
 
-    // ---- banks ----
     struct Sample
     {
         std::vector<int16_t> pcm;
-        int64_t loop = -1;   // sample index to repeat from, -1 = one-shot
+        int64_t loop = -1;
     };
 
     struct Bank
@@ -81,11 +51,8 @@ namespace
         uint8_t u8(uint32_t o) const { return o < d.size() ? d[o] : 0; }
         uint16_t u16(uint32_t o) const { return static_cast<uint16_t>(u8(o) | u8(o + 1) << 8); }
         uint32_t u32(uint32_t o) const { return u16(o) | static_cast<uint32_t>(u16(o + 2)) << 16; }
-        // HEAD payload: 0x100, body size, then the offsets of TGIF, SEIF, VELT, PANT, LFOT
         uint32_t field(int i) const { return u32(head + 4 * i); }
 
-        // body + offset up to the frame with the end flag (bit 0); it repeats from the frame with bit 2 when the end
-        // frame has bit 1 (the SPU's loop flags)
         std::shared_ptr<Sample> sample(uint32_t off)
         {
             if (auto it = samples.find(off); it != samples.end())
@@ -115,8 +82,6 @@ namespace
     };
     std::unique_ptr<Bank> g_banks[kBanks];
 
-    // libsd sceSdNote2Pitch (LIBSD.IRX export 13, 0x3bd0): two u16 tables 0x8000 * 2^(n/12), 0x8000 * 2^(f/1536)
-    // (tools/xvab.py note2pitch, checked entry by entry against the IRX)
     uint32_t note2pitch(int centerNote, int centerFine, int note)
     {
         static uint32_t semi[12], fine[128];
@@ -148,7 +113,6 @@ namespace
         return v & 0xffff;
     }
 
-    // ---- SE voices ----
     struct Voice
     {
         bool on = false;
@@ -157,8 +121,8 @@ namespace
         uint64_t serial = 0;
         std::shared_ptr<Sample> s;
         double pos = 0, step = 1;
-        float gl = 0, gr = 0;   // split volume x velocity curve x pan table
-        int release = -1;       // frames left of the fade, -1 = not stopping
+        float gl = 0, gr = 0;
+        int release = -1;
     };
     Voice g_voices[kVoices];
     uint64_t g_serial = 0;
@@ -167,7 +131,7 @@ namespace
     {
         int volL = 0x80, volR = 0x80;
         float pitch = 1.0f;
-        bool alloc = false, paused = false;   // alloc: from the play to the stop
+        bool alloc = false, paused = false;
     };
     Handle g_handles[kHandles];
     int g_nextHandle = 0;
@@ -201,9 +165,6 @@ namespace
         return *oldest;
     }
 
-    // Note-on (IRX 0x8a5c -> 0x8f10): every split of the program whose key range holds the key sounds. Rate from the
-    // split's root (or the key itself with flag 0x40), base pitch 0x1000 = 48 kHz; level (IRX 0x93c0) = split volume
-    // x VELT[velocity] x PANT[centre], each /128.
     void noteOn(Bank &b, int bankId, int handle, uint32_t tag, int prog, int key, int vel)
     {
         const uint32_t tgif = b.field(2);
@@ -234,7 +195,7 @@ namespace
             v.tag = tag;
             v.serial = ++g_serial;
             v.s = b.sample(b.u32(s + 0x14));
-            v.step = pitch / 4096.0;   // the SPU's pitch: 0x1000 = 48 kHz, the mix rate
+            v.step = pitch / 4096.0;
             v.gl = b.u8(s + 0xa) / 128.0f * level / 128.0f * panL / 128.0f;
             v.gr = b.u8(s + 0xb) / 128.0f * level / 128.0f * panR / 128.0f;
             if (v.s->pcm.empty())
@@ -242,8 +203,6 @@ namespace
         }
     }
 
-    // SE bytecode (SESQ, IRX interpreter 0x7260; tools/xvab.py sequence): op = byte & 0x3f, bit 6 = every SE; operands;
-    // a varint delta time. In the data the commands that sound are note-ons at time 0, after note-offs.
     void runSe(Bank &b, int bankId, int handle, int group, int number)
     {
         const uint32_t seif = b.field(3);
@@ -311,18 +270,17 @@ namespace
             default:
                 return;
             }
-            varint();   // delta time
+            varint();
         }
     }
 
-    // ---- ADPCM streams ----
     struct Stream
     {
         bool used = false, ended = false, paused = false;
         int channels = 1;
         ror::Adpcm dec[2];
         std::deque<int16_t> pcm[2];
-        std::vector<uint8_t> partial;   // bytes short of a whole frame per channel
+        std::vector<uint8_t> partial;
         int volL = 0x80, volR = 0x80;
         float pitch = 1.0f;
         double frac = 0;
@@ -331,9 +289,8 @@ namespace
 
     Stream *stream(uint32_t h) { return h < kStreams && g_streams[h].used ? &g_streams[h] : nullptr; }
 
-    // ---- output to the audio device ----
     std::mutex g_outMutex;
-    constexpr size_t kRingFrames = 16384, kMaxQueued = 7200;   // at most 150 ms queued for the device
+    constexpr size_t kRingFrames = 16384, kMaxQueued = 7200;
     std::vector<float> g_ring(kRingFrames * 2);
     size_t g_ringRead = 0, g_ringFill = 0;
     AudioStream g_device{};
@@ -358,7 +315,7 @@ namespace
     void push(const float *mix, size_t frames)
     {
         std::lock_guard<std::mutex> lock(g_outMutex);
-        if (g_ringFill + frames > kMaxQueued)   // the game ran ahead of the device (catch-up, fast-forward): drop the oldest
+        if (g_ringFill + frames > kMaxQueued)
         {
             const size_t drop = g_ringFill + frames - kMaxQueued;
             g_ringRead = (g_ringRead + drop) % kRingFrames;
@@ -420,7 +377,6 @@ namespace
         std::fseek(g_wav, 0, SEEK_END);
     }
 
-    // One VBlank of sound.
     void mixVblank()
     {
         std::array<float, 2 * kVblankFrames> mix{};
@@ -512,12 +468,11 @@ namespace
                 pcm[i] = static_cast<int16_t>(std::lround(mix[i] * 32767.0f));
             std::fwrite(pcm, sizeof pcm, 1, g_wav);
             g_wavFrames += kVblankFrames;
-            if (g_wavFrames % (kRate * 2) < kVblankFrames)   // keep the header valid every 2 s
+            if (g_wavFrames % (kRate * 2) < kVblankFrames)
                 wavHeader();
         }
     }
 
-    // The placeholders' answers for ROR_SOUND=0 (ror_placeholders.cpp before the host driver).
     uint32_t g_fbBank = 0, g_fbVoice = 0, g_fbStream = 0;
 }
 
@@ -541,8 +496,6 @@ namespace ror
     }
 }
 
-// ---- banks ----
-
 void ror_snd_bank_open(uint8_t *rdram, R5900Context *ctx, PS2Runtime *)
 {
     if (!enabled())
@@ -561,7 +514,6 @@ void ror_snd_bank_open(uint8_t *rdram, R5900Context *ctx, PS2Runtime *)
         ror::log("sound: XVAB open (id %d, %08x) refused", id, addr);
         return ror::ret(ctx, 0xffffffffu);
     }
-    // header size at +8, chunks from +0xc; the body (PS-ADPCM samples) follows at the header's 16-byte-aligned end
     uint32_t hsize = 0, bodySize = 0;
     std::memcpy(&hsize, hdr + 8, 4);
     for (uint32_t p = 0xc; p + 8 <= hsize && hsize < 0x100000;)
@@ -615,8 +567,6 @@ void ror_snd_bank_close(uint8_t *, R5900Context *ctx, PS2Runtime *)
     ror::ret(ctx, 0);
 }
 
-// ---- SEs ----
-
 void ror_snd_se_play(uint8_t *, R5900Context *ctx, PS2Runtime *)
 {
     if (!enabled())
@@ -629,7 +579,7 @@ void ror_snd_se_play(uint8_t *, R5900Context *ctx, PS2Runtime *)
         if (!g_handles[c].alloc && !handleSounding(c))
             h = c;
     }
-    if (h < 0)   // all 64 in use: the next one in turn is taken over
+    if (h < 0)
     {
         h = g_nextHandle;
         for (Voice &v : g_voices)
@@ -675,8 +625,6 @@ void ror_snd_se_stop(uint8_t *, R5900Context *ctx, PS2Runtime *)
     ror::ret(ctx, 0);
 }
 
-// 0x23e188(handle, on, b): RPC 0x82 sub 1 with 0 (on = 0) or 1 / 2; sndman's states 4 / 6 pause and resume an SE
-// with it and read status 8 back.
 void ror_snd_se_pause(uint8_t *, R5900Context *ctx, PS2Runtime *)
 {
     const uint32_t h = ror::arg(ctx, 0);
@@ -704,8 +652,6 @@ void ror_snd_se_pitch(uint8_t *, R5900Context *ctx, PS2Runtime *)
     ror::ret(ctx, 0);
 }
 
-// ---- streams ----
-
 void ror_snd_stream_open(uint8_t *, R5900Context *ctx, PS2Runtime *)
 {
     if (!enabled())
@@ -730,7 +676,7 @@ void ror_snd_stream_open(uint8_t *, R5900Context *ctx, PS2Runtime *)
 void ror_snd_stream_status(uint8_t *, R5900Context *ctx, PS2Runtime *)
 {
     if (!enabled())
-        return ror::ret(ctx, 0x05);   // in use | finished
+        return ror::ret(ctx, 0x05);
     const Stream *s = stream(ror::arg(ctx, 0));
     if (!s)
         return ror::ret(ctx, 0);
@@ -756,7 +702,6 @@ void ror_snd_stream_data(uint8_t *rdram, R5900Context *ctx, PS2Runtime *)
     const uint8_t *src = s && n && n < (16u << 20) ? ror::ptr(rdram, addr, n) : nullptr;
     if (!src)
         return ror::ret(ctx, 0);
-    // stereo: frame 2k left, 2k+1 right (str.md); mono: every frame
     s->partial.insert(s->partial.end(), src, src + n);
     const size_t group = 16u * s->channels;
     size_t p = 0;
@@ -815,8 +760,6 @@ void ror_snd_stream_pitch(uint8_t *, R5900Context *ctx, PS2Runtime *)
             s->pitch = ctx->f[12];
     ror::ret(ctx, 0);
 }
-
-// ---- volumes (0x23a0b0 clamps the master to -128..127, the categories to -128..128) ----
 
 void ror_snd_master_volume(uint8_t *, R5900Context *ctx, PS2Runtime *)
 {

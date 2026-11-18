@@ -1,18 +1,9 @@
-"""Resolve a game-thread profile (src/ror_profile_win32.cpp) with the runner's linker map and split the time.
-
-Each sample is a stack (leaf first) of exe offsets or module names. A sample is charged to the first frame, from
-the leaf up, that is not C runtime or another module (memcpy, sleep and allocator time go to their caller), and the
-frame's object file decides the category. Time spent sleeping in our vsync wait is reported separately.
-
-  python tools/port/profile.py [--profile extracted/ps2recomp/run/profile.tsv] [--map ...ps2EntryRunner.map]
-                               [--top N] [--dump]
-"""
+"""Resolve a game-thread profile (src/ror_profile_win32.cpp) with the runner's linker map and split the time."""
 import argparse, bisect, collections, os, re, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 OUT = os.path.join(ROOT, 'extracted', 'ps2recomp')
 
-# Object file (runtime library objects are "lib:object") -> category.
 CATEGORIES = [
     (r'^unity_\d+_cxx\.obj$|_0x[0-9a-f]+\.obj$', 'recompiled game code'),
     (r'(^|:)(gs_cpu_backend|gs_frontend|ps2_gs_memory|ps2_gif_arbiter)\.obj$', 'GS emulation'),
@@ -30,14 +21,13 @@ PASS_THROUGH = re.compile(r'^(libcmt|libvcruntime|libucrt|libcpmt|msvcprt|msvcrt
 
 
 def demangle(name):
-    """Readable form of an MSVC name: ?f@C@N@@... -> N::C::f (good enough for reports)."""
     if not name.startswith('?'):
         return name
     body = name[1:].split('@@', 1)[0]
     parts = [p for p in body.split('@') if p]
     if not parts:
         return name
-    if parts[0].startswith('?'):  # special names (??0 ctor, ??1 dtor, ...)
+    if parts[0].startswith('?'):
         parts[0] = parts[0][1:]
     return '::'.join(reversed(parts))
 
@@ -82,7 +72,7 @@ def main():
             return ('module', tok, tok)
         try:
             rva = int(tok[1:], 16)
-        except ValueError:  # a line cut off when the run ended
+        except ValueError:
             return ('?', tok, '?')
         i = bisect.bisect_right(rvas, rva) - 1
         if i < 0:

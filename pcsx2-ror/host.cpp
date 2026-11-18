@@ -1,6 +1,4 @@
-﻿// PCSX2's Host interface (pcsx2/Host.h) as the port provides it, derived from pcsx2-gsrunner/Main.cpp: no Qt UI, no
-// VM, no input or hotkeys of PCSX2's own (the runner reads the pad), messages to the runner's log sink. The render
-// window is the runner's child window, given to ror_pcsx2_gs_open (gs.cpp).
+﻿
 #include "pcsx2/PrecompiledHeader.h"
 
 #include "ror_internal.h"
@@ -31,11 +29,10 @@ namespace
         else if (!message.empty())
             ror_pcsx2::log(level, "PCSX2: %.*s", static_cast<int>(message.size()), message.data());
     }
-} // namespace
+}
 
 void Host::CommitBaseSettingChanges()
 {
-	// the settings live in memory
 }
 
 void Host::LoadSettings(SettingsInterface& si, std::unique_lock<std::mutex>& lock)
@@ -177,9 +174,8 @@ void Host::OnSaveStateSaved(const std::string_view filename)
 {
 }
 
-void Host::RunOnCPUThread(std::function<void()> function, bool block /* = false */)
+void Host::RunOnCPUThread(std::function<void()> function, bool block )
 {
-	// The "CPU thread" is the runner's game thread, the only caller of the C API.
 	function();
 }
 
@@ -218,7 +214,6 @@ void Host::RequestExitBigPicture()
 
 void Host::RequestVMShutdown(bool allow_confirm, bool allow_save_state, bool default_save_state)
 {
-	// there is no VM
 }
 
 void Host::OnAchievementsLoginSuccess(const char* username, u32 points, u32 sc_points, u32 unread_messages)

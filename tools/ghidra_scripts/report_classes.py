@@ -1,9 +1,3 @@
-"""Format RoRClasses.java reports (classes.tsv, vtables.tsv) into the tables of notes/classes.md.
-
-Usage: python report_classes.py <report_dir> [--dump]
-  Writes the generated markdown to stdout. --dump prints raw parsed rows instead.
-Only slots a class introduces or overrides are listed; inherited slots are summarised.
-"""
 import csv
 import sys
 from collections import defaultdict
@@ -29,7 +23,7 @@ def main():
     for c in classes:
         children[base[c['class']]].append(c['class'])
 
-    vt = defaultdict(list)  # vtable addr -> slots
+    vt = defaultdict(list)
     for s in slots:
         vt[s['vtable']].append(s)
 

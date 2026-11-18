@@ -1,9 +1,3 @@
-// ROR_VIF1_DUMP=F[:N]: the VIF1 stream of frames F..F+N-1 (default N 1) as vif1_<frame>.bin, for tools/port/vif1_chain.py.
-// MagSystem::kick_dma 0x1189f0 sends i3r_chain_head(MagSystem + 0x3a0) (0x221120: the head at +0x118) on DMA channel 1
-// right after wait_vsync_swap returns, so the chain is complete when wait_vsync_swap ends. It is walked the way the DMAC
-// reads a source chain: tag ids refe/cnt/next/ref/refs/call/ret/end, two call levels, and with CHCR.TTE the tag's upper
-// 64 bits go into the stream before the data (as PS2Memory's chain path does).
-// File: u32 'VIF1', u32 frame, u32 head, u32 tte, then the stream.
 #include "ror.h"
 
 #include <cstdio>
@@ -45,7 +39,7 @@ namespace ror
         std::vector<uint8_t> out;
         uint32_t tadr = head, stack[2] = {}, sp = 0;
         int tags = 0, irqTags = 0;
-        size_t at4096 = 0; // stream bytes through tag 4096: PS2Recomp's source-chain walk stops there (kMaxChainTags)
+        size_t at4096 = 0;
         for (bool end = false; !end && tags < 1000000; ++tags)
         {
             const uint8_t *tag = ptr(rdram, tadr, 16);
@@ -64,13 +58,13 @@ namespace ror
             uint32_t data = tadr + 16;
             switch (id)
             {
-            case 0: data = addr; end = true; break;                          // refe
-            case 1: tadr = data + qwc * 16; break;                           // cnt
-            case 2: tadr = addr; break;                                      // next
-            case 3: case 4: data = addr; tadr += 16; break;                  // ref, refs
-            case 5: if (sp < 2) stack[sp++] = data + qwc * 16; tadr = addr; break; // call
-            case 6: if (sp) tadr = stack[--sp]; else end = true; break;      // ret
-            default: end = true; break;                                      // end
+            case 0: data = addr; end = true; break;
+            case 1: tadr = data + qwc * 16; break;
+            case 2: tadr = addr; break;
+            case 3: case 4: data = addr; tadr += 16; break;
+            case 5: if (sp < 2) stack[sp++] = data + qwc * 16; tadr = addr; break;
+            case 6: if (sp) tadr = stack[--sp]; else end = true; break;
+            default: end = true; break;
             }
             if (qwc)
             {

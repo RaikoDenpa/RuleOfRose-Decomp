@@ -1,18 +1,4 @@
-"""Catalogue and GS feature census of a folder of PCSX2 GS dumps (the real game's: extracted/gsref/pcsx2_real/).
-
-  python tools/port/gs_census.py DIR [--json OUT.json] [--index]
-
-Per dump (.gs, .gs.xz, .gs.zst; parsed with gs_dump.py's model): the header check (serial SLES-54218, CRC 0x52585249),
-vsyncs, transfers per path index, primitives, textures, image transfers and render-target-as-texture draws. Then the
-census over all dumps: primitive types, texture formats and CLUT modes, filtering and wrap modes, blend/alpha/Z test
-modes, frame/Z formats, the other per-pixel switches, each with its draw count and the number of dumps using it.
---index also writes DIR/index.md: thumbnail (DIR/thumbs/STEM.png), the description and suggested name from DIR/notes.tsv
-(STEM<TAB>name<TAB>description, written by hand from the replays), the stats.
-
-The real game's dumps hold PCSX2's GIF unit output: every packet as path index 3 (MTGS.cpp GS_RINGTYPE_GSPACKET ->
-GSgifTransfer -> Transfer<3>), all paths merged, so they have no PATH1/2/3 split. Our dumps (src/ror_gsdump.cpp) keep
-the paths apart (1 PATH2, 2 PATH3, 3 PATH1).
-"""
+"""Catalogue and GS feature census of a folder of PCSX2 GS dumps (the real game's: extracted/gsref/pcsx2_real/)."""
 import argparse, collections, glob, json, os, struct, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -38,18 +24,16 @@ def psm(v):
 
 
 class Dump:
-    """One dump through gs_dump.Gs with a kick hook that tallies the state of every primitive."""
-
     def __init__(self, path):
         self.path = path
         d = gs_dump.load(path)
         serial, crc, version, sp, ss, p = gs_dump.header(d)
         self.serial, self.crc, self.version = serial, crc, version
         self.ok = serial == SERIAL and crc == CRC
-        self.features = collections.Counter()   # 'group: value' -> draws
-        self.textures = set()                     # (TBP0, PSM) of textured draws
-        self.rt = set()                            # FBP of every frame buffer drawn to
-        self.rt_tex = collections.Counter()        # self / other RT / Z as texture
+        self.features = collections.Counter()
+        self.textures = set()
+        self.rt = set()
+        self.rt_tex = collections.Counter()
         self.trx = collections.Counter()
         self.transfers = collections.Counter()
         self.prims_per_vsync = []
@@ -213,7 +197,7 @@ def main():
     for p in paths:
         try:
             dm = Dump(p)
-        except Exception as e:  # noqa: BLE001 - report and go on
+        except Exception as e:
             print('%s: UNREADABLE (%s)' % (os.path.basename(p), e))
             continue
         dumps.append(dm)

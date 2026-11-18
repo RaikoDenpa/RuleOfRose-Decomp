@@ -1,13 +1,7 @@
 Subject: ps2xRuntime: observers for the GIF stream per path and for register writes outside it
 
-GifArbiter::setObserver sees every packet just before the GS processes it, in processing order, with its
-path. The data is the path's GIF stream: a packet can start with bytes the runtime added (streamOffset), the
-GIFtag the VIF1 interpreter puts in front of an IMAGE transfer that continues in a later DIRECT; the observer
-does not see those. GS::setRegisterObserver sees GS::writeRegister calls, the register writes runtime handlers
-make outside the GIF stream (sceGsPutDrawEnv). Rule of Rose uses both to write PCSX2 GS dumps.
-
 diff --git a/ps2xRuntime/include/runtime/gs/gs_frontend.h b/ps2xRuntime/include/runtime/gs/gs_frontend.h
-index 4c3f641..07c5514 100644
+index 4c3f641..4da190e 100644
 --- a/ps2xRuntime/include/runtime/gs/gs_frontend.h
 +++ b/ps2xRuntime/include/runtime/gs/gs_frontend.h
 @@ -4,6 +4,7 @@
@@ -18,17 +12,16 @@ index 4c3f641..07c5514 100644
  #include <memory>
  #include <mutex>
  #include <vector>
-@@ -115,6 +116,9 @@ public:
+@@ -115,6 +116,8 @@ public:
                             const uint8_t *data,
                             uint32_t sizeBytes);
      void writeRegister(uint8_t regAddr, uint64_t value);
-+    // Sees each writeRegister call (register writes from runtime handlers, outside the GIF stream), after the write.
 +    using RegisterObserverFn = std::function<void(uint8_t regAddr, uint64_t value)>;
 +    void setRegisterObserver(RegisterObserverFn fn) { m_registerObserver = std::move(fn); }
  
      const uint8_t *lockDisplaySnapshot(uint32_t &outSize);
      void unlockDisplaySnapshot();
-@@ -180,6 +184,7 @@ private:
+@@ -180,6 +183,7 @@ private:
      uint8_t *m_localMemoryStorage = nullptr;
      uint32_t m_localMemorySize = 0u;
      struct GSRegisters *m_privRegs = nullptr;
@@ -37,24 +30,21 @@ index 4c3f641..07c5514 100644
      mutable std::mutex m_backendLifetimeMutex;
      mutable std::mutex m_presentationMutex;
 diff --git a/ps2xRuntime/include/runtime/gs/ps2_gif_arbiter.h b/ps2xRuntime/include/runtime/gs/ps2_gif_arbiter.h
-index 2012083..f11c81c 100644
+index 2012083..718c35f 100644
 --- a/ps2xRuntime/include/runtime/gs/ps2_gif_arbiter.h
 +++ b/ps2xRuntime/include/runtime/gs/ps2_gif_arbiter.h
 @@ -17,6 +17,7 @@ struct GifArbiterPacket
      GifPathId pathId;
      bool path2DirectHl = false;
      bool path3Image = false;
-+    uint32_t streamOffset = 0u; // leading bytes the runtime added (not part of the path's GIF stream)
++    uint32_t streamOffset = 0u;
      std::vector<uint8_t> data;
  };
  
-@@ -24,19 +25,26 @@ class GifArbiter
+@@ -24,19 +25,23 @@ class GifArbiter
  {
  public:
      using ProcessPacketFn = std::function<void(const uint8_t *, uint32_t)>;
-+    // Sees every packet just before the GS processes it, in processing order, with its path. The data is that
-+    // path's GIF stream: without the streamOffset bytes a packet starts with (the GIFtag the VIF1 interpreter puts in
-+    // front of an IMAGE transfer that continues in a later DIRECT). For tools such as GS dump writers.
 +    using ObserverFn = std::function<void(GifPathId, const uint8_t *, uint32_t)>;
  
      GifArbiter() = default;
@@ -77,20 +67,19 @@ index 2012083..f11c81c 100644
  
      static bool isImagePacket(const uint8_t *data, uint32_t sizeBytes);
 diff --git a/ps2xRuntime/include/runtime/ps2_memory.h b/ps2xRuntime/include/runtime/ps2_memory.h
-index 16a29aa..c773590 100644
+index d78f237..5d9b70a 100644
 --- a/ps2xRuntime/include/runtime/ps2_memory.h
 +++ b/ps2xRuntime/include/runtime/ps2_memory.h
-@@ -334,7 +334,9 @@ public:
+@@ -334,7 +334,8 @@ public:
      bool isPath3Masked() const { return m_path3Masked; }
      void flushMaskedPath3Packets(bool drainImmediately = true);
  
 -    void submitGifPacket(GifPathId pathId, const uint8_t *data, uint32_t sizeBytes, bool drainImmediately = true, bool path2DirectHl = false);
-+    // streamOffset: leading bytes of data that are not part of the path's GIF stream (GifArbiter::ObserverFn).
 +    void submitGifPacket(GifPathId pathId, const uint8_t *data, uint32_t sizeBytes, bool drainImmediately = true, bool path2DirectHl = false,
 +                         uint32_t streamOffset = 0u);
-     // A DIRECT/DIRECTHL payload: continues a GIF IMAGE transfer left pending by an earlier payload, then submits the rest.
      void submitVif1DirectPayload(const uint8_t *data, uint32_t qwCount, bool directHl);
      void processGIFPacket(uint32_t srcPhysAddr, uint32_t qwCount);
+     void processGIFPacket(const uint8_t *data, uint32_t sizeBytes);
 diff --git a/ps2xRuntime/src/lib/gs/gs_frontend.cpp b/ps2xRuntime/src/lib/gs/gs_frontend.cpp
 index 9281d5f..c7d5dc6 100644
 --- a/ps2xRuntime/src/lib/gs/gs_frontend.cpp
@@ -166,7 +155,7 @@ index ca1f00b..cf17154 100644
          m_gifPacketCallback(data, sizeBytes);
  
 diff --git a/ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp b/ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp
-index 4f78338..075cf5b 100644
+index 4a02767..3b826c9 100644
 --- a/ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp
 +++ b/ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp
 @@ -295,7 +295,7 @@ void PS2Memory::submitVif1DirectPayload(const uint8_t *data, uint32_t qwCount, b

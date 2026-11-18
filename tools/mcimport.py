@@ -1,33 +1,13 @@
-"""PS2 memory cards (PCSX2) -> the port's host card folder (src/ror_mc.cpp): imports real-game saves.
-
-  python tools/mcimport.py CARD --dump                      list the card's directories and files
-  python tools/mcimport.py CARD [--dir BESLES-54218] [--to FOLDER] [--force]
-
-CARD: a PCSX2 memory card image (.ps2: raw pages, with or without the 16-byte ECC spare area per 512-byte page) or a
-PCSX2 folder memory card (a folder with _pcsx2_superblock; each save directory is a host folder, with an
-_pcsx2_index file of metadata that is not part of the save). The save directory (default BESLES-54218, Rule of Rose
-PAL) is copied into FOLDER (default extracted/ps2recomp/run/memcard/slot1, the port's slot 1 under build.py run), its
-files with the card's modification times. An existing copy there is only replaced with --force.
-
-Card image format (PS2 memory card file system, as PCSX2 and ps2sdk's mcman read it): page 0 is the superblock
-("Sony PS2 Memory Card Format "): page size +0x28, pages per cluster +0x2a, alloc offset +0x34, root directory cluster
-+0x3c, indirect FAT cluster list +0x50 (32 entries). FAT entries are 32-bit (bit 31 = in use, 0xffffffff = end of
-chain), reached through the indirect list (n -> ifc[n / 256 / 256] -> fat cluster [n / 256 % 256] -> entry
-[n % 256]); data cluster numbers are relative to the alloc offset. Directory entries are 512 bytes: mode +0 (0x8000
-exists, 0x20 directory, 0x10 file), length +4 (entries or bytes), created +8, first cluster +0x10, modified +0x18,
-name +0x40; a directory's first entry "." holds its entry count.
-"""
+"""PS2 memory cards (PCSX2) -> the port's host card folder (src/ror_mc.cpp): imports real-game saves."""
 import argparse, datetime, os, shutil, struct, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_TO = os.path.join(ROOT, 'extracted', 'ps2recomp', 'run', 'memcard', 'slot1')
 MAGIC = b'Sony PS2 Memory Card Format '
-JST = datetime.timezone(datetime.timedelta(hours=9))  # the card's clock (PS2 RTC)
+JST = datetime.timezone(datetime.timedelta(hours=9))
 
 
 class Image:
-    """A raw card image: superblock, FAT, directories."""
-
     def __init__(self, path):
         self.d = open(path, 'rb').read()
         if not self.d.startswith(MAGIC):
@@ -37,8 +17,6 @@ class Image:
         self.root, = struct.unpack_from('<I', self.d, 0x3c)
         self.ifc = struct.unpack_from('<32I', self.d, 0x50)
         clusters, = struct.unpack_from('<I', self.d, 0x30)
-        # PCSX2's .ps2 files keep the 16-byte ECC spare area after every page (8,650,752 bytes for 8 MB); plain
-        # dumps without it are 8,388,608.
         pages = clusters * self.ppc
         self.raw_page = self.page + 16 if len(self.d) == pages * (self.page + 16) else self.page
         if len(self.d) < pages * self.raw_page:
@@ -46,7 +24,6 @@ class Image:
         self.csize = self.page * self.ppc
 
     def cluster(self, n):
-        """Absolute cluster n's data."""
         out = b''
         for p in range(n * self.ppc, (n + 1) * self.ppc):
             out += self.d[p * self.raw_page:p * self.raw_page + self.page]
@@ -85,7 +62,6 @@ class Image:
         return {'mode': mode, 'length': length, 'cluster': cluster, 'name': name, 'mtime': mtime}
 
     def listdir(self, first, count=None):
-        """Entries of the directory starting at relative cluster `first` (count from its "." when None)."""
         if count is None:
             count = self.entry(self.cluster(self.alloc + first)[:512])['length']
         raw = self.chain(first, count * 512)
@@ -97,7 +73,6 @@ class Image:
         return out
 
     def walk(self):
-        """(path, entry) for every directory and file: the root's directories and their files."""
         for d in self.listdir(self.root):
             yield d['name'], d
             if d['mode'] & 0x20:
@@ -113,8 +88,6 @@ class Image:
 
 
 class Folder:
-    """A PCSX2 folder memory card: save directories as host folders."""
-
     def __init__(self, path):
         self.path = path
 

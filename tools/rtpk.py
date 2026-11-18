@@ -1,21 +1,4 @@
-"""RTPK containers (the game's "PFH" archives: .RPK, .WRD, .GRB, some .BIN), read by bed/bedpfh.cpp.
-
-Usage:
-  python rtpk.py <archive> --dump [-r]                 list entries (offset, size, name); -r descends into nested RTPKs
-  python rtpk.py <archive> --extract <out_dir> [-r]    write entries; nested archives go to <name>.d/ with -r
-
-Layout (all little-endian; see notes/formats/pfh.md):
-  0x00 'RTPK'   0x04 u32 total size   0x08 u16 0   0x0a u16 flags   0x0c u16 alignment   0x0e u16 count
-  0x10 u32 name-table size   0x14..0x1f zero
-  then, in this order, only if the flag is set:
-    bit 0       u32 size[count]
-    bit 1       u32 offset[count]          (absolute, from the archive start)
-    bit 4+k     u16 table_k[count]         (one table per consecutive set bit from bit 4; unused on this disc)
-    bit 15      count NUL-terminated names
-  bit 14 marks archives whose names carry no extension.
-  Without the offset table, entry i starts at the aligned end of entry i-1 (first at the aligned header end);
-  without the size table, entry i ends where entry i+1 starts (the last at the total size).
-"""
+"""RTPK containers (the game's "PFH" archives: .RPK, .WRD, .GRB, some .BIN), read by bed/bedpfh.cpp."""
 import argparse
 import mmap
 import os
@@ -39,8 +22,6 @@ class Entry:
 
 
 class Archive:
-    """Parsed RTPK header over a bytes-like buffer (bytes, memoryview or mmap) starting at `base`."""
-
     def __init__(self, buf, base=0):
         if bytes(buf[base:base + 4]) != MAGIC:
             raise ValueError('not an RTPK archive')
@@ -84,7 +65,6 @@ class Archive:
         return e.size >= 0x20 and bytes(self.buf[self.base + e.offset:self.base + e.offset + 4]) == MAGIC
 
     def validate(self):
-        """Return a list of problems (empty when the header is consistent with the data)."""
         p = []
         if self.reserved:
             p.append('reserved u16 at +8 is %#x' % self.reserved)
@@ -113,7 +93,6 @@ def entry_name(e, arc):
 
 
 def safe_relpath(name):
-    """Entry names may contain '..' (e.g. 'ev110c/ev110c/../camera/x.bin'): resolve them, never leave the out dir."""
     p = posixpath.normpath(name.replace('\\', '/').lstrip('/'))
     parts = [s for s in p.split('/') if s not in ('', '.', '..')]
     return parts or ['%s' % name.replace('/', '_')]
@@ -131,8 +110,6 @@ def dump(arc, recursive, indent=''):
 
 
 def extract(arc, out, recursive, seen=None):
-    """Write entries below out; returns the number of files written. Names that resolve to an already written
-    path (e.g. several '../../dummy.dat') get '.<index>' appended so nothing is overwritten."""
     seen = set() if seen is None else seen
     os.makedirs(out, exist_ok=True)
     n = 0

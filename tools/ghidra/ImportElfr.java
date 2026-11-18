@@ -1,11 +1,3 @@
-// Post-script for a raw ELFR module imported with the BinaryLoader at 0x408130 (see import_seq.ps1).
-// Rebuilds the linked layout and applies the annotations written by `elfr.py --ghidra`:
-//   code   file [0, text)        at 0x408130 (as imported)
-//   data   file [text, len) + bss/stack up to the VM window end, moved to the TSV's data address (gap 0xd0/0xb0)
-//   alias  the data block again 0x40000 higher (byte-mapped): lui 0x45/0x46 reach the same bytes as 0x41/0x42
-//   natives 0x400000-0x40812f, labels native_<i>_<name> at 0x400144 + 64*i
-// gp is set to the stack base W over the code, so gp-relative loads resolve.
-// Usage: -postScript ImportElfr.java <annotations.tsv>
 import ghidra.app.cmd.disassemble.DisassembleCommand;
 import ghidra.app.script.GhidraScript;
 import ghidra.program.model.address.Address;
@@ -45,7 +37,6 @@ public class ImportElfr extends GhidraScript {
         long dataEnd = data + (len - text);
         if (end > dataEnd) mem.createUninitializedBlock("bss_stack", toAddr(dataEnd), end - dataEnd, false).setWrite(true);
         mem.createByteMappedBlock("data_alias_45", toAddr(data + 0x40000), toAddr(data), end - data, false);
-        // natives: one `jr ra; nop` stub per entry so the decompiler shows calls by native name
         mem.createInitializedBlock("natives", toAddr(0x400000), code - 0x400000, (byte) 0, monitor, false).setExecute(true);
 
         Register gpReg = currentProgram.getRegister("gp");

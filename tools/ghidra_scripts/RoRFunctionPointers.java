@@ -1,16 +1,3 @@
-// Creates the functions Ghidra never found because only data or a code-built constant points at them: aligned words in initialized
-// non-executable blocks, lui/addiu (ori) pairs and j/jal targets, whose value is an aligned address in EE code (not .vutext) that
-// no function contains.
-// Typical cases: two-instruction leaves in g++ 2.9x vtables ({0xffff0000, pfn} pairs), the script VM's default
-// natives (vm_native_table 0x2eed90), i3r node handlers (table at 0x2f12f0). Without them PS2Recomp has no function
-// at an indirect-call target and parks the thread (milestone 3, jalr 0x22e450 -> 0x22cd20).
-//
-// Jump tables are not function-pointer tables: a run of consecutive code-pointer words that contains any switch
-// case (a Ghidra computed-jump target, or a label owned by a function/switch as RoRJumpTables.java leaves them) is
-// a jump table, and none of its targets becomes a function; functions this script created at such targets earlier
-// are removed. Zero words at the target (padding) are skipped. Idempotent.
-//
-// Args: [report.tsv]   target, first referencing word, result
 //@category RuleOfRose
 
 import java.io.*;
@@ -37,7 +24,6 @@ public class RoRFunctionPointers extends GhidraScript {
     public void run() throws Exception {
         int split = splitDetachedChunks();
 
-        // Switch cases Ghidra knows, and the entries of our overrides (data/jumptables.tsv: function, table, count).
         Set<Long> cases = new HashSet<>();
         for (Instruction in : currentProgram.getListing().getInstructions(true))
             for (Reference r : in.getReferencesFrom())
@@ -53,13 +39,11 @@ public class RoRFunctionPointers extends GhidraScript {
             }
         }
 
-        // Runs of code-pointer words in data.
         Set<Long> switchTargets = new HashSet<>();
-        TreeMap<Long, Long> candidates = new TreeMap<>();  // target -> first referencing word
+        TreeMap<Long, Long> candidates = new TreeMap<>();
         for (MemoryBlock b : currentProgram.getMemory().getBlocks()) {
-            // Only the ELF's own data (the EE extension maps low memory blocks with unrelated contents).
             if (!b.isInitialized() || b.isExecute() || b.getStart().getOffset() < 0x100000L) continue;
-            List<long[]> run = new ArrayList<>();  // {word address, target}
+            List<long[]> run = new ArrayList<>();
             for (Address a = b.getStart(); ; a = a.add(4)) {
                 boolean end = a.add(3).compareTo(b.getEnd()) > 0;
                 Address t = end ? null : codePointer(getInt(a) & 0xffffffffL);
@@ -78,15 +62,11 @@ public class RoRFunctionPointers extends GhidraScript {
             }
         }
 
-        // Addresses built in code (lui r, hi; then within 5 instructions addiu/ori r, r, lo): callbacks and handlers
-        // passed as arguments (libmc RPC end callback 0x24fc60, DMAC 3 handler 0x252ea8, i3r handlers ...).
         for (MemoryBlock b : currentProgram.getMemory().getBlocks()) {
             if (!b.isInitialized() || !b.isExecute() || b.getName().equals(".vutext") || b.getStart().getOffset() < 0x100000L) continue;
             for (Address a = b.getStart(); a.add(3).compareTo(b.getEnd()) <= 0; a = a.add(4)) {
                 long w = getInt(a) & 0xffffffffL;
                 if ((w >>> 26) == 2 || (w >>> 26) == 3) {
-                    // j / jal: a tail jump or call to code outside every function (j 0x1bf078 from
-                    // MagLifeMenuSelLang::isInit 0x285eec reaches an 8-byte leaf between two functions).
                     long v = ((a.getOffset() + 4) & 0xf0000000L) | ((w & 0x3ffffff) << 2);
                     Address t = codePointer(v);
                     if (t != null && getFunctionContaining(a) != null && !switchTargets.contains(v) && !cases.contains(v)
@@ -113,7 +93,6 @@ public class RoRFunctionPointers extends GhidraScript {
             }
         }
 
-        // Functions created earlier that are no longer justified: at a jump-table target, or no reference left.
         int removed = 0;
         List<Long> mine = new ArrayList<>();
         for (Function f : currentProgram.getFunctionManager().getFunctions(true))
@@ -166,10 +145,6 @@ public class RoRFunctionPointers extends GhidraScript {
                 split, candidates.size(), created, kept, padding, failed, switchTargets.size(), removed));
     }
 
-    // PS2Recomp decodes a function as [entry, body max + 1). A body range below the entry, in another memory block
-    // or past the next function's entry is a separate function that Ghidra merged because it is reached by a tail
-    // jump (MagLifeMenu*::isInit jump to 8-byte leaves in .text; 0x233d98 jumps into a whole function at 0x233870).
-    // Such ranges leave the body and become functions of their own.
     private int splitDetachedChunks() throws Exception {
         int n = 0;
         List<Function> all = new ArrayList<>();
@@ -181,7 +156,6 @@ public class RoRFunctionPointers extends GhidraScript {
             MemoryBlock entryBlock = currentProgram.getMemory().getBlock(entry);
             Function next = getFunctionAfter(entry);
             AddressSet detached = new AddressSet();
-            // also the part of a contiguous range below the entry (FUN_0021a374 starts with the leaf j'd to at 0x21a348)
             if (body.getMinAddress().compareTo(entry) < 0)
                 detached.add(body.intersectRange(body.getMinAddress(), entry.previous()));
             for (AddressRange r : body.getAddressRanges()) {
@@ -220,8 +194,6 @@ public class RoRFunctionPointers extends GhidraScript {
         return c != null && c.startsWith(MARK);
     }
 
-    // Switch cases of data/jumptables.tsv overrides (outside the function body) carry a label owned by their
-    // function or switch.
     private boolean isCaseLabel(Address t) {
         for (Symbol s : currentProgram.getSymbolTable().getSymbols(t))
             if (!s.getParentNamespace().isGlobal()) return true;

@@ -1,11 +1,4 @@
-"""List or extract the files of a PS2 ISO9660 disc image.
-
-Usage:
-  python iso9660.py <image.iso> --dump                 list every file: LBA, size, path
-  python iso9660.py <image.iso> --extract <out_dir>    copy every file out (out_dir must not be a tracked path)
-
-Only plain ISO9660 (no Joliet/UDF needed for PS2 discs). Version suffixes (";1") are stripped on extract.
-"""
+"""List or extract the files of a PS2 ISO9660 disc image."""
 import argparse
 import os
 import struct
@@ -20,12 +13,11 @@ def read_sectors(f, lba, count):
 
 
 def walk(f, lba, size, prefix=''):
-    """Yield (path, lba, size, is_dir) for every record below the directory at lba."""
     data = read_sectors(f, lba, (size + SECTOR - 1) // SECTOR)
     i = 0
     while i < len(data):
         rec_len = data[i]
-        if rec_len == 0:  # records never cross a sector boundary; skip padding
+        if rec_len == 0:
             i = (i // SECTOR + 1) * SECTOR
             continue
         e_lba = struct.unpack_from('<I', data, i + 2)[0]

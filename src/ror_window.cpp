@@ -1,10 +1,3 @@
-// The game window (port.ini, ror_options.cpp): raylib's window, which PCSX2's GS presents into through a child window
-// that follows its client size (ror_pcsx2host_win32.cpp: pcsx2WindowLoop resizes the child, the GS resizes its swap
-// chain at the next VSync). Main thread only, from the external presentation's init and loop callbacks (ror_gs.cpp).
-//   window_width / window_height   client size at start, centred on the monitor (the runtime opens 640x448, resizable)
-//   fullscreen = 1                 borderless fullscreen at start; F11 toggles it; the cursor hides while fullscreen
-//   volume = 0..100                raylib's master volume (the game's sound mix and the movies' audio streams)
-// The picture keeps the PS2's aspect inside the window: gs.ini's [EmuCore/GS] AspectRatio (PCSX2's setting).
 #include "ror.h"
 
 #include "raylib.h"

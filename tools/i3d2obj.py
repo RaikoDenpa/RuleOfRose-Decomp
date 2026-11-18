@@ -1,26 +1,4 @@
-"""I3D models (I3D_BIN, the game's "i3d" library) -> Wavefront OBJ + MTL + PNG textures, in the bind pose.
-
-Usage:
-  python i3d2obj.py <model.mdl RTPK | I3D_BIN file> --dump            tag tree summary + parts
-  python i3d2obj.py <model.mdl RTPK | I3D_BIN file> --obj <out.obj>   writes out.obj, out.mtl and textures next to it
-      [--textures <RTPK of TIM2s>]  only needed when giving a bare I3D_BIN; a .mdl RTPK carries its own
-      [--model-index N]             which I3D_BIN of the .mdl (characters carry a low-poly second model)
-
-The model data is Z-up (the frame before ROOTNODE's axis swap); the OBJ is written Y-up as (x, z, -y).
-
-Format notes: notes/formats/i3d.md. In short:
-  - tags are 16 bytes {u32 data, u32 count | type << 24 | nofix << 31, u32 children, u32 name}, offsets from +0x10
-  - a geometry part is a type-0x56 tag; children: [0x02 strip groups, 0x03, 0x03>0x33 normals, 0x37 OBB,
-    0x03>0x33 positions, 0x02 > 0x31 skin weights]
-  - strip groups: 0x02 > 0x30 (one per material pass) > 0x02 > 0x47 strips; a strip = {u32 0x10, u8 qwc, u8 count,
-    ...} + count * {u16 index | ADC << 15, u16 winding << 15}; its children 0x03>0x33 are per-strip-vertex
-    attributes (the V2-32 one is the UVs)
-  - 0x33 blocks = {u32 header size, u16 qwc, u16 vertex count, u32 kind, u32}: kind 1 = a VIF stream (UNPACK/STMASK/
-    STROW/STCOL/STCYCL), decoded here by a small VIF model into "VU memory" vectors; kind 0 = raw float qwords
-  - textures bind through materials: 0x4d u16 material -> 0x25 material -> 0x26 layer texture name
-  - parts are placed by the skeleton: rigid meshes on the node owning their 0x59 instance, single-bone parts on
-    their bone, skinned parts by blending v * inverse_bind[slot] * bone with the 0x31 weights
-"""
+"""I3D models (I3D_BIN, the game's "i3d" library) -> Wavefront OBJ + MTL + PNG textures, in the bind pose."""
 import argparse
 import collections
 import os
@@ -28,10 +6,10 @@ import struct
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import rtpk  # noqa: E402
-import tim2png  # noqa: E402
+import rtpk
+import tim2png
 
-B = 0x10  # tag offsets are relative to file offset 0x10
+B = 0x10
 
 
 class Tag:
@@ -55,12 +33,10 @@ def walk(d, t, depth=0):
         yield from walk(d, k, depth + 1)
 
 
-# ---------------------------------------------------------------- VIF
 FIELD_SIZES = {0: 4, 1: 2, 2: 1}
 
 
 def vif_block(d, off):
-    """Run the VIF stream of a type-0x33 block; return {qword address: [x, y, z, w]} (floats or ints)."""
     hdr, qwc, _nv = struct.unpack_from('<IHH', d, off)
     p, end = off + hdr, off + hdr + qwc * 16
     mem = {}
@@ -102,7 +78,6 @@ def vif_block(d, off):
                     else:
                         c = struct.unpack('<H', e)[0]
                         f = [(c & 31) << 3, ((c >> 5) & 31) << 3, ((c >> 10) & 31) << 3, (c >> 15) << 7]
-                    # V2/V3 leave the remaining fields "undefined"; V1 broadcasts. Fill like the VIF does for V1.
                     if comps == 1:
                         f = f * 4
                     vals[:len(f)] = f
@@ -140,7 +115,6 @@ def vif_block(d, off):
 
 
 def block_vectors(d, tag33, count=None):
-    """Vertex vectors of a 0x33 block. Header word 3 (w2) = 1: VIF stream; 0: raw, one float qword per vertex."""
     hdr, qwc, nv, w2 = struct.unpack_from('<IHHI', d, tag33.data)
     n = count if count is not None else nv
     if w2 == 0:
@@ -150,7 +124,6 @@ def block_vectors(d, tag33, count=None):
 
 
 def first33(d, t):
-    """0x03 > 0x33 child -> the 0x33 tag (or None)."""
     for k in kids(d, t):
         if k.type == 0x33 and k.data is not None:
             return k
@@ -160,7 +133,7 @@ def first33(d, t):
 def unpack_formats(d, off):
     hdr, qwc, nv, w2 = struct.unpack_from('<IHHI', d, off)
     if w2 == 0:
-        return [(4, 0, nv)]  # raw qwords
+        return [(4, 0, nv)]
     hdr, qwc = struct.unpack_from('<IH', d, off)
     p, end, out = off + hdr, off + hdr + qwc * 16, []
     cl = wl = 1
@@ -184,13 +157,12 @@ def unpack_formats(d, off):
     return out
 
 
-# ---------------------------------------------------------------- model
 class Part:
     def __init__(self):
         self.positions = []
         self.normals = []
-        self.strips = []   # list of (entries, uvs, pass_index, material_data)
-        self.material = None  # u16 at +0xc of the nearest type-0x4d ancestor (material index)
+        self.strips = []
+        self.material = None
 
 
 def strip_entries(d, off):
@@ -200,7 +172,6 @@ def strip_entries(d, off):
 
 
 def walk_mat(d, t, mat=None):
-    """Like walk(), also passing down the material index of the nearest type-0x4d ancestor."""
     if t.type == 0x4d and t.data is not None:
         mat = struct.unpack_from('<H', d, t.data + 0xc)[0]
     yield t, mat
@@ -208,9 +179,7 @@ def walk_mat(d, t, mat=None):
         yield from walk_mat(d, k, mat)
 
 
-# ---------------------------------------------------------------- skeleton
 def mat_mul(a, b):
-    """Row-vector convention (v' = v * M): returns a * b."""
     return [sum(a[r * 4 + k] * b[k * 4 + c] for k in range(4)) for r in range(4) for c in range(4)]
 
 
@@ -239,10 +208,6 @@ def transform(v, m, w=1.0):
 
 
 class Skeleton:
-    """Root data: +0x10 -> local bind matrices M0[n], +0x14 -> world bind matrices M1[n] (row vectors, 4x4 floats),
-    +0x1c -> u16 node index per sorted name, +0x20 -> sorted node-name offsets, +0x28 u16 node count, +0x2e u16 name
-    count. Verified: M1[b] == M0[b] * M1[parent(b)] exactly, which also yields the parents."""
-
     def __init__(self, d):
         rd = Tag(d, 0x10).data
         p_m0, p_m1, _p_tex, p_map, p_names = struct.unpack_from('<5I', d, rd + 0x10)
@@ -265,14 +230,10 @@ class Skeleton:
                     if e < best[0]:
                         best = (e, p)
             self.parents.append(best[1])
-        # skinned parts are stored before ROOTNODE's matrix (an axis permutation); bone-local parts are brought
-        # into that same frame with M1[node] * inverse(M1[0])
         self.to_model = [mat_mul(m, mat_inv(self.m1[0])) for m in self.m1] if self.count else []
 
 
 def node_tags(d):
-    """The root's node group: one type-0x2a tag per skeleton node, in matrix order; data = u16 parent (0xffff =
-    none), children [0x2b, 0x03 > 0x59 mesh instances owned by the node]."""
     for grp in kids(d, Tag(d, 0x10)):
         ks = kids(d, grp)
         if ks and all(k.type == 0x2a for k in ks):
@@ -281,9 +242,6 @@ def node_tags(d):
 
 
 def mesh_instances(d):
-    """Type 0x59 'CombinedMeshInstanceNNNN': {u32 self-rel offset of a u16 list, u16 mesh index, u16 count, ...}.
-    Returns {mesh: (owner node, list)}: palette slot i of the mesh maps to node list[i] (an empty list means the
-    palette holds node indices directly); parts without a palette are rigid on the owner node."""
     out = {}
     for n, node in enumerate(node_tags(d)):
         for t, _ in walk(d, node):
@@ -295,10 +253,6 @@ def mesh_instances(d):
 
 
 def inverse_binds(d):
-    """{mesh: [matrix per palette slot]} from the type-0x46 child of each 0x2d 'CombinedMeshNNNN' (skinned meshes
-    only). 0x46 data: u32 offsets (relative to the data) of [inverse bind matrices, per-bone OBBs (64 bytes each),
-    u32 bone-name offsets (relative to the data)], then u16 counts of each. inverse(A[slot]) equals the bone's
-    model matrix plus a constant per-mesh translation, so the mesh's vertices can sit in a shifted frame."""
     out = {}
     for t, _ in walk(d, Tag(d, 0x10)):
         if t.type != 0x2d or not t.name[-4:].isdigit():
@@ -312,8 +266,6 @@ def inverse_binds(d):
 
 
 def skin_weights(d, part_children):
-    """Per-vertex [(slot, weight)] of a skinned part, from its 0x02 > 0x31 records: {u32 8, u16 slot, u16 count}
-    + count * {u32 vertex address in bytes (16 per vertex), f32 weight}."""
     out = collections.defaultdict(list)
     for grp in part_children:
         if grp.type != 0x02:
@@ -329,7 +281,6 @@ def skin_weights(d, part_children):
 
 
 def part_contexts(d):
-    """Yield (0x56 tag, material index, mesh index, palette or None) for every geometry part."""
     def visit(t, mat, mesh, pal):
         if t.type == 0x4d and t.data is not None:
             mat = struct.unpack_from('<H', d, t.data + 0xc)[0]
@@ -358,14 +309,10 @@ def parse_parts(d):
         owner, slots = inst.get(mesh, (None, []))
         skin = None
         if pal is None:
-            # rigid mesh: stored in the space of the node that owns the mesh instance
             part.node = owner
         elif len(pal) == 1:
-            # single-bone part of a skinned mesh: stored in that bone's space
             part.node = slots[pal[0]] if slots else pal[0]
         elif mesh in binds:
-            # skinned part: v * A[slot] * bone, blended by the 0x31 weights. A is the skin's own bind pose, which can
-            # differ from the skeleton's rest pose (ACTION/amd), so this poses the skin to match the rigid parts.
             skin = {}
             for s, a in enumerate(binds[mesh]):
                 node = slots[s] if slots else s
@@ -421,8 +368,6 @@ def parse_parts(d):
 
 
 def triangles(ents, flip_rule):
-    """Strip -> triangles (local strip vertex indices). ADC (bit 15 of the index) suppresses the triangle ending at
-    that vertex. flip_rule picks the winding from the per-vertex bit (bit 15 of the second half-word)."""
     out = []
     for i in range(2, len(ents)):
         a, b = ents[i]
@@ -449,7 +394,6 @@ def dot(a, b):
 
 
 def choose_winding(parts):
-    """Return (rule, agree, total): the winding rule whose face normals agree best with the vertex normals."""
     score = [0, 0]
     total = 0
     for _, part in parts:
@@ -472,10 +416,7 @@ def choose_winding(parts):
     return rule, score[rule], total
 
 
-# ---------------------------------------------------------------- textures
 def load_model(path, tex_path=None, model_index=0):
-    """A .mdl RTPK holds a texture RTPK and one or more I3D_BIN entries (characters add an untextured low-poly
-    companion model with the same skeleton, probably for shadows); model_index picks among the I3D_BIN entries."""
     buf = open(path, 'rb').read()
     textures = {}
     if buf[:4] == rtpk.MAGIC:
@@ -510,8 +451,6 @@ def texture_set(buf):
 
 
 def texture_names(d):
-    """Texture names the model registers (root data: +0x18 -> u32[] of name offsets relative to the root data,
-    count u16 at +0x2c; read by 0x22d360 / 0x22d350 once unpacked)."""
     rd = Tag(d, 0x10).data
     arr = rd + struct.unpack_from('<I', d, rd + 0x18)[0]
     n = struct.unpack_from('<H', d, rd + 0x2c)[0]
@@ -523,10 +462,6 @@ def texture_names(d):
 
 
 def material_textures(d):
-    """Texture name per material index. Materials are the type-0x25 children of the root's material group (in
-    order; the u16 at +0xc of a type-0x4d record indexes them). Each material has 0x02 > 0x26 layers whose data
-    holds a self-relative pointer at +0x18 to the texture name; 0x21c4d8 (called from DogModel::vfunc_15) looks
-    that name up in the registered texture table and stores the index at +0x1c. First named layer wins here."""
     out = []
     for grp in kids(d, Tag(d, 0x10)):
         ks = kids(d, grp)
@@ -547,7 +482,6 @@ def material_textures(d):
     return out
 
 
-# ---------------------------------------------------------------- export
 def export_obj(d, parts, textures, out_obj, rule):
     base = os.path.splitext(out_obj)[0]
     mtl = base + '.mtl'
@@ -576,7 +510,7 @@ def export_obj(d, parts, textures, out_obj, rule):
             if not part.positions:
                 continue
             o.write('o part%d_%x\n' % (pi_, tag.at))
-            for v in part.positions:  # Z-up -> Y-up
+            for v in part.positions:
                 o.write('v %.6f %.6f %.6f\n' % (v[0], v[2], -v[1]))
             for n in part.normals:
                 o.write('vn %.6f %.6f %.6f\n' % (n[0], n[2], -n[1]))
@@ -616,7 +550,6 @@ def main():
     if d[:8] != b'I3D_BIN\0' or struct.unpack_from('<I', d, 8)[0] != 0x00100001 or d[0x17] & 0x7f != 0x52:
         sys.exit('not an unpacked-on-disc I3D_BIN v1.0x10 root')
     if max(struct.unpack_from('<4I', d, 0x10)[i] for i in (0, 2, 3)) + B >= len(d):
-        # FIX/fence.mdl: the entry is cut at 0x4000 bytes while its root tag points past 0xb000
         sys.exit('truncated I3D_BIN: root tag points past the end of the %d-byte file' % len(d))
     root, parts = parse_parts(d)
     rule, agree, total = choose_winding(parts)
