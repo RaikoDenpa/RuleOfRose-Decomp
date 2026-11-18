@@ -1,4 +1,4 @@
-# Rule of Rose — PC Port
+# Rule of Rose - PC Port
 
 A native PC port of *Rule of Rose* (PlayStation 2, Punchline, 2006), built by reverse engineering the
 PAL release (`SLES_542.18`) and statically recompiling it to C++.
@@ -8,6 +8,9 @@ PAL release (`SLES_542.18`) and statically recompiling it to C++.
 > requires your own legally dumped copy of the game (PAL, SLES-54218).
 
 ---
+
+## AI Usage
+**Alot of the Decomp was coded with AI and fixed by me if there were mistakes or bad code mostly done out of boredom since I'm working on a different project that has be banging my head against a wall** 
 
 ## Status
 
