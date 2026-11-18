@@ -17,7 +17,7 @@
 namespace
 {
     constexpr int kRate = 48000;
-    constexpr int kVblankFrames = kRate / 50;
+    constexpr int kMaxVblankFrames = kRate / 50;
     constexpr int kHandles = 0x40, kStreams = 0x30, kVoices = 96, kBanks = 0x100;
     constexpr int kReleaseFrames = 480;
     constexpr size_t kStreamQueue = kRate / 2;
@@ -379,7 +379,8 @@ namespace
 
     void mixVblank()
     {
-        std::array<float, 2 * kVblankFrames> mix{};
+        const int frames = kRate / (ror::vblankHz() == 60 ? 60 : 50);
+        std::array<float, 2 * kMaxVblankFrames> mix{};
         const float mL = g_master[0] / 128.0f, mR = g_master[1] / 128.0f;
         for (Stream &s : g_streams)
         {
@@ -390,7 +391,7 @@ namespace
             std::deque<int16_t> &l = s.pcm[0], &r = s.pcm[s.channels > 1 ? 1 : 0];
             if (s.pitch == 1.0f)
             {
-                const size_t n = std::min<size_t>(kVblankFrames, std::min(l.size(), r.size()));
+                const size_t n = std::min<size_t>(frames, std::min(l.size(), r.size()));
                 for (size_t i = 0; i < n; ++i)
                 {
                     mix[2 * i] += l[i] * gl;
@@ -403,7 +404,7 @@ namespace
             }
             const double step = std::max(0.01f, s.pitch);
             size_t i = 0;
-            for (; i < kVblankFrames; ++i)
+            for (; i < static_cast<size_t>(frames); ++i)
             {
                 const size_t k = static_cast<size_t>(s.frac);
                 if (k + 1 >= std::min(l.size(), r.size()))
@@ -428,7 +429,7 @@ namespace
             const float gr = v.gr * h.volR / 128.0f * g_seVol[1] / 128.0f * mR / 32768.0f;
             const std::vector<int16_t> &pcm = v.s->pcm;
             const double len = static_cast<double>(pcm.size()), step = v.step * std::max(0.01f, h.pitch);
-            for (int i = 0; i < kVblankFrames; ++i)
+            for (int i = 0; i < frames; ++i)
             {
                 if (v.pos >= len)
                 {
@@ -460,15 +461,15 @@ namespace
         for (float &x : mix)
             x = x < -1.0f ? -1.0f : x > 1.0f ? 1.0f : x;
         if (g_deviceOn)
-            push(mix.data(), kVblankFrames);
+            push(mix.data(), static_cast<size_t>(frames));
         if (g_wav)
         {
-            int16_t pcm[2 * kVblankFrames];
-            for (int i = 0; i < 2 * kVblankFrames; ++i)
+            int16_t pcm[2 * kMaxVblankFrames];
+            for (int i = 0; i < 2 * frames; ++i)
                 pcm[i] = static_cast<int16_t>(std::lround(mix[i] * 32767.0f));
-            std::fwrite(pcm, sizeof pcm, 1, g_wav);
-            g_wavFrames += kVblankFrames;
-            if (g_wavFrames % (kRate * 2) < kVblankFrames)
+            std::fwrite(pcm, sizeof(int16_t), 2 * static_cast<size_t>(frames), g_wav);
+            g_wavFrames += static_cast<uint32_t>(frames);
+            if (g_wavFrames % (kRate * 2) < static_cast<uint32_t>(frames))
                 wavHeader();
         }
     }

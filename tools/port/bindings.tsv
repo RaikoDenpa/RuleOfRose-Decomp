@@ -232,4 +232,7 @@
 0x0026d2c8	override	ror_nop	FUN_0026d2c8	socket delete
 0x0026d4c8	override	ror_one	FUN_0026d4c8	pad state: always connected (1)
 0x0026d320	override	ror_pad_read	FUN_0026d320	raw data from host keyboard/gamepad (config/pad.ini): u16 buttons active-low, sticks +2..+5
-0x0026da50	override	ror_nop	FUN_0026da50	vibration
+0x0026da50	override	ror_pad_vibrate	FUN_0026da50	vibration (socket, 1, &mode, n, &data) from bedpad 0x101b50 -> XInput (port.ini rumble)
+#
+# --- overrides, view: widescreen (src/ror_view.cpp) ---
+0x00228b80	override	ror_view_setup	FUN_00228b80	i3r view setup (a1 = view): port.ini widescreen widens the main view 0x7506b0 by 4/3, then the recompiled original

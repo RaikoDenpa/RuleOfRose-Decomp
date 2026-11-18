@@ -1,4 +1,5 @@
 #include "ror.h"
+#include "ror_host.h"
 
 #include "ps2_host_backend.h"
 
@@ -502,4 +503,20 @@ bool ror::fastForwardHeld()
             if (IsGamepadButtonDown(0, button))
                 return true;
     return false;
+}
+
+void ror_pad_vibrate(uint8_t *rdram, R5900Context *ctx, PS2Runtime *)
+{
+    static const bool enabled = ror::optionInt("rumble", 1) == 1;
+    static int small = 0, large = 0;
+    const uint32_t mode = ror::rd32(rdram, ror::arg(ctx, 2)), data = ror::rd32(rdram, ror::arg(ctx, 4));
+    if (mode == 1 || mode == 3)
+        small = static_cast<int>(data & 1);
+    if (mode == 2)
+        large = static_cast<int>(data & 0xff);
+    else if (mode == 3)
+        large = static_cast<int>((data >> 1) & 0xff);
+    if (enabled && !ror::paused())
+        ror::rumble(small, large);
+    ror::ret(ctx, 0);
 }

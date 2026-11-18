@@ -46,6 +46,7 @@ namespace
 #undef ROR_TRACE
     };
     constexpr size_t kCount = sizeof(kBindings) / sizeof(kBindings[0]);
+    ror::Handler g_originals[kCount] = {};
 
     struct Trace
     {
@@ -337,6 +338,7 @@ namespace
                 ++skipped;
                 continue;
             }
+            g_originals[i] = runtime.lookupFunction(kBindings[i].addr);
             if (runtime.replaceFunction(kBindings[i].addr, kTrampolines[i]))
                 ++ok;
             else
@@ -357,6 +359,15 @@ namespace
 }
 
 PS2_REGISTER_GAME_OVERRIDE("Rule of Rose (PAL, SLES_542.18)", "SLES_542.18", 0x00100008u, 0u, &apply)
+
+ror::Handler ror::original(uint32_t addr)
+{
+    for (size_t i = 0; i < kCount; ++i)
+        if (kBindings[i].addr == addr && g_originals[i])
+            return g_originals[i];
+    ror::log("no recompiled original for %08x", addr);
+    return &ror_nop;
+}
 
 void ror_nop(uint8_t *, R5900Context *ctx, PS2Runtime *) { ror::ret(ctx, 0); }
 void ror_one(uint8_t *, R5900Context *ctx, PS2Runtime *) { ror::ret(ctx, 1); }

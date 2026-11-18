@@ -26,7 +26,9 @@ PAL release (`SLES_542.18`) and statically recompiling it to C++.
 
 What works today: the story with its in-engine events, movies with sound, music, voices and sound effects,
 fighting (with enemies grabbing, getting knocked down and the game-over screen), saving to and loading from a
-memory card in a host folder, and a launcher with display, graphics and sound settings.
+memory card in a host folder, and a launcher with display, graphics, sound and control settings. Extras over the
+PS2: a 30 fps mode (the NTSC releases' speed, smooth on 60 Hz monitors), 16:9 widescreen with a wider 3D view,
+controller vibration on XInput pads, pausing while the window is in the background, and rebindable controls.
 
 **Current focus:** the rest of chapter 3 (its boss fight) and the later chapters, plus feedback from playtesters.
 
@@ -54,8 +56,9 @@ SLES_542.18 ──► Ghidra analysis ──► function list, names, jump table
 | Seam | Replaced at | State |
 |---|---|---|
 | File I/O | `rxFile*` API (including the streaming ring) + libkernl `sceOpen`/`sceRead` | ✅ host files from your disc dump |
-| Threads / vsync | RX thread layer, the VBlank interrupt, `MagSystem::wait_vsync_swap` | ✅ 50 Hz VBlank clock (PAL), the game's 25 fps |
-| Input | libpad2 raw pad data | ✅ keyboard + gamepad (`config/pad.ini`) |
+| Threads / vsync | RX thread layer, the VBlank interrupt, `MagSystem::wait_vsync_swap` | ✅ 50 Hz VBlank clock (PAL), the game's 25 fps; optional 60 Hz clock (30 fps) |
+| Input | libpad2 raw pad data, libdbc vibration | ✅ keyboard + gamepad (`config/pad.ini`, rebindable in the launcher); vibration on XInput controllers |
+| View | i3r's view setup (the 4:3 view extents `MagScene::render` computes) | ✅ optional hor+ 16:9 |
 | Rendering | VIF1 → VU1 → GS | ✅ PCSX2's VIF1, microVU1 and GS in `pcsx2-ror.dll` (D3D11/12, Vulkan, OpenGL; upscaling); PS2Recomp's software GS as a fallback |
 | Movies | rxmpeg stream and decode functions | ✅ our player: our PSS demuxer, FFmpeg's MPEG-2 decoder, our PS-ADPCM audio |
 | Sound | rxsnd client API (the IOP sound driver's calls) | ✅ our driver: XVAB sound-effect banks, music and voice streams, volumes, mixed at 48 kHz |
@@ -67,14 +70,15 @@ SLES_542.18 ──► Ghidra analysis ──► function list, names, jump table
 The port is distributed only as private playtest builds to people who own the game. `python tools/port/build.py
 dist` makes that package: `RuleOfRose.exe` (the launcher), the runner and its DLLs, and no game files.
 
-The launcher is a settings window: display (window or fullscreen, window size, 4:3 or stretched), graphics
-(renderer, internal resolution, texture filtering), game (skip the intro, movies, volume), controls, saves and
-logs. The first time you press Play it asks for your disc image, checks that it is the PAL SLES-54218 release,
-and copies the game's files next to it.
+The launcher is a settings window: display (window or fullscreen, window size, 4:3, 16:9 widescreen or
+stretched, 25 or 30 fps), graphics (renderer, internal resolution, texture filtering, FXAA, CAS sharpening,
+deinterlacing, scanline/CRT filter), game (skip the intro, movies, pause in the background, vibration, volume),
+a Controls window for keys and gamepad buttons, saves and logs. The first time you press Play it asks for your
+disc image, checks that it is the PAL SLES-54218 release, and copies the game's files next to it.
 
 In the game: **F11** toggles fullscreen, holding **F** fast-forwards (4x), **Start** skips movies. The default
 keys are in `config/pad.ini` (WASD to move, X/Space for Cross, C/Backspace for Circle, Enter for Start, Q/E for
-L1/R1); a gamepad works out of the box.
+L1/R1); a gamepad works out of the box. In 16:9 the 3D view gets wider; menus, captions and movies are stretched.
 
 ## Repository layout
 
@@ -131,6 +135,7 @@ override takes seconds.
 | `build.py run --frames N` | stop after N frames (0 = never) |
 | `build.py run --pad-script "100+4:cross"` | press buttons at given frames (unattended runs) |
 | `--env ROR_MOVIES=0`, `--env ROR_SOUND=0` | skip movies; silence the sound driver (the regression tools use both) |
+| `port.ini` (or `--env ROR_PORT_INI=FILE`) | `skip_intro`, `fullscreen`, `window_width`/`window_height`, `volume`, `refresh = 60` (30 fps), `widescreen`, `pause_unfocused`, `rumble` |
 | `--env ROR_GS=cpu` | PS2Recomp's software GS instead of PCSX2's |
 | `--env ROR_SCREENSHOT=F,…` | save the presented frame at those frames |
 | `--env ROR_PROFILE=FRAME:SECONDS` | sampling profile → `tools/port/profile.py` |

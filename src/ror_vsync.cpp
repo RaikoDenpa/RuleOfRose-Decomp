@@ -10,6 +10,7 @@ namespace
 {
     using Clock = std::chrono::steady_clock;
     constexpr auto kVblank = std::chrono::microseconds(20000);
+    constexpr auto kVblank60 = std::chrono::nanoseconds(16666667);
     constexpr auto kFastVblank = std::chrono::microseconds(5000);
 
     constexpr uint32_t kRxVblankCount = 0x2f1f90;
@@ -31,6 +32,32 @@ namespace
     uint64_t g_frames = 0;
     uint32_t g_interval = 0;
     uint32_t g_bursts = 0, g_burstMax = 0, g_dropped = 0;
+    int g_hz = 50;
+
+    bool refresh60()
+    {
+        static const bool on = ror::optionInt("refresh", 50) == 60;
+        return on;
+    }
+
+    Clock::duration period(uint8_t *rdram)
+    {
+        static const uint64_t fastUntil = []
+        {
+            const char *env = std::getenv("ROR_FAST_UNTIL");
+            return env ? std::strtoull(env, nullptr, 10) : 0ull;
+        }();
+        const bool play = ror::rd32(rdram, kVsyncInterval) == 2 && ror::rd32(rdram, kMovieObject) == 0;
+        const int hz = refresh60() && play ? 60 : 50;
+        if (hz != g_hz)
+        {
+            ror::log("VBlank clock %d Hz (frame %llu)", hz, static_cast<unsigned long long>(g_frames));
+            g_hz = hz;
+        }
+        if (g_frames < fastUntil || ror::fastForwardHeld())
+            return kFastVblank;
+        return hz == 60 ? Clock::duration(kVblank60) : Clock::duration(kVblank);
+    }
 
     void vblank(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
@@ -64,12 +91,13 @@ namespace
 
     void pump(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        static const uint64_t fastUntil = []
+        if (ror::paused() && g_started)
         {
-            const char *env = std::getenv("ROR_FAST_UNTIL");
-            return env ? std::strtoull(env, nullptr, 10) : 0ull;
-        }();
-        const auto period = g_frames < fastUntil || ror::fastForwardHeld() ? kFastVblank : kVblank;
+            while (ror::paused() && !runtime->isStopRequested())
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            g_next = Clock::now();
+        }
+        const auto period = ::period(rdram);
         const auto now = Clock::now();
         if (!g_started)
         {
@@ -119,6 +147,7 @@ namespace
 }
 
 uint64_t ror::frame() { return g_frames; }
+int ror::vblankHz() { return g_hz; }
 
 void ror_InitThread(uint8_t *, R5900Context *ctx, PS2Runtime *) { ror::ret(ctx, 1); }
 void ror_rxThInit(uint8_t *, R5900Context *ctx, PS2Runtime *) { ror::ret(ctx, 0); }

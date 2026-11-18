@@ -35,6 +35,10 @@ namespace ror
     void halt(PS2Runtime *runtime, const char *why);
 
     uint64_t frame();
+    int vblankHz();
+    bool paused();
+
+    Handler original(uint32_t addr);
 
     bool soundOn();
     void soundVblank();
